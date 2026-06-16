@@ -3,8 +3,12 @@
 # and relink the web embedder. (libnss3 unchanged unless NSS was rebuilt.)
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DISTBIN=/home/velzie/src/gecko-wasm/obj-full-emscripten/dist/bin
-STRIP=/usr/lib/emsdk/upstream/bin/llvm-strip
+ROOT="$(cd "$HERE/.." && pwd)"
+# Release uses a separate objdir so debug<->release doesn't thrash one tree.
+OBJDIR="$ROOT/obj-full-emscripten"
+[ "${GECKO_RELEASE:-}" = "1" ] && OBJDIR="${OBJDIR}-release"
+DISTBIN="$OBJDIR/dist/bin"
+STRIP="${EMSDK:-/usr/lib/emsdk}/upstream/bin/llvm-strip"
 
 # llvm-strip/objcopy corrupt this object's wasm reloc table ("invalid relocation
 # offset"), so DON'T strip here -- copy the unstripped libxul.so and let the link

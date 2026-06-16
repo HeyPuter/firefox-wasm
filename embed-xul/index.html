@@ -345,49 +345,102 @@
       return p;
     };
 
-    setStatus('loading wasm…', false);
-    createGecko({
-      // emscripten loader progress: byte counts for the preloaded data file, plus
-      // phase messages ("Preparing...", "Running..."). The wasm download itself is
-      // tracked by the fetch wrapper above.
-      setStatus: (text) => {
-        const m = text && text.match(/\((\d+(?:\.\d+)?)\/(\d+)\)/);
-        if (m) refreshProgress('downloading data ' + Math.round(parseFloat(m[1]) / parseFloat(m[2]) * 100) + '%');
-        else if (text) refreshProgress(text);
-      },
-      preRun: [(m) => {
-        m.ENV['GRE_DIR'] = '/gre';
-        m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
-        // Opt in to GPU compositing (in-process WebRender -> WebGL2 -> this
-        // <canvas>). Gated so the default software path is unchanged.
-        if (gpuMode) m.ENV['GECKO_GPU'] = '1';
-        if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
-        const mozlog = new URLSearchParams(location.search).get('mozlog');
-        if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
-        if (wispUrl && typeof WISP !== 'undefined') {
-          WISP.install(m, wispUrl);
-          log('[harness] WISP networking enabled via ' + wispUrl);
-        }
-      }],
-      print: onStdout,
-      printErr: (t) => log('[err]', t),
-      onAbort: (w) => { log('[ABORT]', w); setStatus('aborted', false); },
-    }).then(async (m) => {
-      mod = m;
-      log('[harness] module instantiated; waiting for engine READY…');
-      await readyP;
-      cmd = mod._xul_cmd_ptr();
-      log('[harness] engine READY, cmd=' + cmd);
-      setStatus('ready — enter a URL', true);
-      progEl.style.display = 'none';
-      goEl.disabled = false;
-      window.__geckoReady = true;
-      startPaintLoop();
-    }).catch((e) => {
-      log('[harness] instantiation failed:', e && e.message ? e.message : e);
-      if (e && e.stack) log(e.stack);
-      setStatus('instantiation failed', false);
-    });
+    // Download `url` (the raw fetch, bypassing the .wasm wrapper) into a Uint8Array,
+    // reporting bytes through the same progress bar.
+    async function fetchCounting(url) {
+      const resp = await _origFetch(url);
+      if (!resp.ok || !resp.body) throw new Error('fetch ' + url + ' -> ' + resp.status);
+      wasmTotal = +resp.headers.get('Content-Length') || 0; wasmLoaded = 0;
+      const reader = resp.body.getReader(), chunks = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value); wasmLoaded += value.byteLength; refreshProgress();
+      }
+      const out = new Uint8Array(wasmLoaded); let o = 0;
+      for (const c of chunks) { out.set(c, o); o += c.byteLength; }
+      return out;
+    }
+
+    // A release build (`make release`) writes gecko-assets.json + zstd-compressed
+    // gecko.{wasm,data}.zst. When present, decompress them in-browser with zstddec
+    // and hand the bytes to emscripten (instantiateWasm for the module,
+    // getPreloadedPackage for the data file). No manifest -> the normal
+    // uncompressed path (the .wasm fetch wrapper above) is used unchanged.
+    (async () => {
+      let assets = { compressed: false };
+      try { const r = await _origFetch('gecko-assets.json'); if (r.ok) assets = await r.json(); } catch (e) {}
+
+      let decoder = null, wasmBytes = null, dataComp = null;
+      if (assets.compressed) {
+        refreshProgress('loading decompressor…');
+        const { ZSTDDecoder } = await import('./zstddec.js');
+        decoder = new ZSTDDecoder(); await decoder.init();
+        refreshProgress('downloading engine (compressed)…');
+        wasmBytes = decoder.decode(await fetchCounting('gecko.wasm.zst'), assets.wasm);
+        refreshProgress('downloading data (compressed)…');
+        dataComp = await fetch('gecko.data.zst').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b));
+        refreshProgress('starting engine…');
+      }
+
+      const compressedHooks = assets.compressed ? {
+        instantiateWasm: (imports, success) => {
+          WebAssembly.instantiate(wasmBytes, imports)
+            .then((r) => success(r.instance, r.module))
+            .catch((e) => log('[harness] wasm instantiate failed', e && e.message || e));
+          return {};  // tell emscripten the result comes via the callback
+        },
+        // emscripten passes the uncompressed data size; zstddec.decode is synchronous.
+        getPreloadedPackage: (name, size) => {
+          const u = decoder.decode(dataComp, size);
+          return u.byteLength === u.buffer.byteLength ? u.buffer : u.slice().buffer;
+        },
+      } : {};
+
+      setStatus('loading wasm…', false);
+      createGecko(Object.assign({
+        // emscripten loader progress: byte counts for the preloaded data file, plus
+        // phase messages. The (uncompressed) wasm download is tracked by the fetch
+        // wrapper above; the compressed path tracks it via fetchCounting.
+        setStatus: (text) => {
+          const m = text && text.match(/\((\d+(?:\.\d+)?)\/(\d+)\)/);
+          if (m) refreshProgress('downloading data ' + Math.round(parseFloat(m[1]) / parseFloat(m[2]) * 100) + '%');
+          else if (text) refreshProgress(text);
+        },
+        preRun: [(m) => {
+          m.ENV['GRE_DIR'] = '/gre';
+          m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
+          // Opt in to GPU compositing (in-process WebRender -> WebGL2 -> this
+          // <canvas>). Gated so the default software path is unchanged.
+          if (gpuMode) m.ENV['GECKO_GPU'] = '1';
+          if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
+          const mozlog = new URLSearchParams(location.search).get('mozlog');
+          if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
+          if (wispUrl && typeof WISP !== 'undefined') {
+            WISP.install(m, wispUrl);
+            log('[harness] WISP networking enabled via ' + wispUrl);
+          }
+        }],
+        print: onStdout,
+        printErr: (t) => log('[err]', t),
+        onAbort: (w) => { log('[ABORT]', w); setStatus('aborted', false); },
+      }, compressedHooks)).then(async (m) => {
+        mod = m;
+        log('[harness] module instantiated; waiting for engine READY…');
+        await readyP;
+        cmd = mod._xul_cmd_ptr();
+        log('[harness] engine READY, cmd=' + cmd);
+        setStatus('ready — enter a URL', true);
+        progEl.style.display = 'none';
+        goEl.disabled = false;
+        window.__geckoReady = true;
+        startPaintLoop();
+      }).catch((e) => {
+        log('[harness] instantiation failed:', e && e.message ? e.message : e);
+        if (e && e.stack) log(e.stack);
+        setStatus('instantiation failed', false);
+      });
+    })();
   </script>
 </body>
 </html>

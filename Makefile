@@ -21,11 +21,20 @@ FIREFOX_REF := 673a67963eda1202575e8ff4334157848856285d
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
 MOZBUILD_STATE_PATH ?= $(HOME)/.mozbuild
+# RELEASE=1 turns on optimizations: --enable-lto for the engine (mozconfig) and
+# -O3 at the emcc relink so wasm-opt's passes run over the final module.
+RELEASE             ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH
+export GECKO_RELEASE := $(RELEASE)
 
-.PHONY: all firefox vendor build web run clean distclean
+.PHONY: all release firefox vendor build web run clean distclean
 
 all: web
+
+# Optimized build (engine LTO + wasm-opt). NOTE: toggling RELEASE changes the
+# mozconfig (--enable-lto), which forces a full reconfigure + rebuild of libxul.
+release:
+	$(MAKE) all RELEASE=1
 
 # Pinned shallow clone. GitHub serves arbitrary reachable SHAs, so we fetch the
 # exact commit at depth 1 (no submodule, no full history). The firefox/.git guard
@@ -54,8 +63,9 @@ run:
 
 clean:
 	rm -f  embed-xul/gecko.js embed-xul/gecko.wasm embed-xul/gecko.data \
-	       embed-xul/gecko.worker.js embed-xul/libxul.stripped.so embed-xul/*.o
+	       embed-xul/gecko.worker.js embed-xul/libxul.stripped.so embed-xul/*.o \
+	       embed-xul/gecko.wasm.zst embed-xul/gecko.data.zst embed-xul/gecko-assets.json
 	rm -rf embed-xul/gre-stage
 
 distclean: clean
-	rm -rf obj-full-emscripten firefox
+	rm -rf obj-full-emscripten obj-full-emscripten-release firefox

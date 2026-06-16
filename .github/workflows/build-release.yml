@@ -92,17 +92,20 @@ jobs:
             mozconfig.full.emscripten
           grep -nE 'MOZ_OBJDIR|libclang|CFLAGS' mozconfig.full.emscripten
 
-      - name: Build (vendor std deps + engine + web) — long
-        run: make web   # firefox already cloned; runs vendor -> mach build -> stage+relink
+      - name: "Build (release: engine LTO + wasm-opt + zstd) — long"
+        run: make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink (-O3) -> zstd
 
-      - name: Package the runtime artifacts
+      - name: Package the runtime artifacts (compressed)
         run: |
           mkdir -p dist/gecko-wasm
-          cp embed-xul/index.html embed-xul/server.cjs \
-             embed-xul/gecko.js embed-xul/gecko.wasm embed-xul/gecko.data \
+          # Release ships the zstd-compressed wasm/data + the zstddec decompressor;
+          # index.html reads gecko-assets.json and decompresses in-browser.
+          cp embed-xul/index.html embed-xul/server.cjs embed-xul/zstddec.js \
+             embed-xul/gecko.js embed-xul/gecko.worker.js \
+             embed-xul/gecko.wasm.zst embed-xul/gecko.data.zst embed-xul/gecko-assets.json \
              dist/gecko-wasm/
           cat > dist/gecko-wasm/README.txt <<'TXT'
-          gecko-wasm runtime build.
+          gecko-wasm runtime build (zstd-compressed; decompressed in-browser via zstddec).
           Serve with COOP/COEP (required for SharedArrayBuffer): `npm i wisp-server-node && node server.cjs`,
           then open the printed http://127.0.0.1:<port>/ in Chromium.
           TXT

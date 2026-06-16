@@ -1334,7 +1334,8 @@ int main() {
 
   const char* gre = getenv("GRE_DIR");
   if (!gre || !*gre) {
-    gre = "/home/velzie/src/gecko-wasm/obj-full-emscripten/dist/bin";
+    // web build sets GRE_DIR=/gre (MEMFS preload); this is just a fallback.
+    gre = "/gre";
   }
   int rv = xul_init(gre);
   if (rv != 0) {

@@ -9,11 +9,22 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 OBJ="$ROOT/obj-full-emscripten"
+[ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
 INC="$OBJ/dist/include"
 TARGET="${TARGET:-node}"
 export EM_CONFIG="$ROOT/em_config"   # binaryen v129 shim (rust LLVM21 wasm features)
 
 # -pthread: match libxul's threaded ABI (shared memory). Both compile + link.
+# Release build (GECKO_RELEASE=1): -O3 makes emcc run wasm-opt's optimization
+# passes over the whole linked module (the engine is already --enable-optimize;
+# add --enable-lto via the mozconfig). Default -O0 -g0 is a fast debug link with
+# NO wasm-opt.
+if [ "${GECKO_RELEASE:-}" = "1" ]; then
+  EMBED_OPT=(-O3); LINK_OPT=-O3
+else
+  EMBED_OPT=(-O0 -g0); LINK_OPT=-O0
+fi
+
 CXXFLAGS=(
   -std=gnu++20 -fno-exceptions -fno-rtti
   -fno-sized-deallocation -fno-aligned-new
@@ -22,7 +33,7 @@ CXXFLAGS=(
   -isystem "$INC/nspr"
   -isystem "$ROOT/firefox/nsprpub/pr/include"   # fallback for un-exported nspr headers
   -pthread
-  -O0 -g0
+  "${EMBED_OPT[@]}"
 )
 
 echo ">> [$TARGET] compiling embed-xul.cpp"
@@ -55,7 +66,7 @@ EXTRA=(
 )
 
 EMSETTINGS=(
-  -O0
+  "$LINK_OPT"
   --profiling-funcs
   # ASSERTIONS=1, not 2: level 2 adds emscripten's expensive integer-write checks
   # (checkInt32 etc.), and its MIN_INT32 is off-by-one (-(2**31)+1 = -2147483647),
@@ -146,3 +157,22 @@ echo "=== undefined symbol count ==="; grep -c "undefined symbol:" "$HERE/link.e
 echo "=== undefined sample ==="; grep -oE "undefined symbol: [^ ]+" "$HERE/link.err" | sort -u | head -20
 echo "=== duplicate symbols ==="; grep -oE "duplicate symbol: [^ ]+" "$HERE/link.err" | sort -u | head
 echo "=== other errors ==="; grep -iE "error" "$HERE/link.err" | grep -ivE "undefined symbol|duplicate symbol" | head -15
+
+# Release (GECKO_RELEASE=1, web target): zstd-compress the shipped artifacts at
+# max level. index.html downloads the .zst and decompresses with zstddec, using
+# gecko-assets.json for the wasm's uncompressed size (the data size comes from
+# emscripten). Non-release builds remove any stale .zst/manifest so the frontend
+# stays on the uncompressed path.
+if [ "$TARGET" = web ]; then
+  if [ "${GECKO_RELEASE:-}" = "1" ] && [ "$rc" = 0 ] && command -v zstd >/dev/null; then
+    echo ">> [release] zstd --ultra -22 gecko.wasm + gecko.data"
+    zstd -q -f --ultra -22 "$HERE/gecko.wasm" -o "$HERE/gecko.wasm.zst"
+    zstd -q -f --ultra -22 "$HERE/gecko.data" -o "$HERE/gecko.data.zst"
+    printf '{"compressed":true,"wasm":%s,"data":%s}\n' \
+      "$(stat -c%s "$HERE/gecko.wasm")" "$(stat -c%s "$HERE/gecko.data")" \
+      > "$HERE/gecko-assets.json"
+    echo ">> wrote gecko.wasm.zst ($(du -h "$HERE/gecko.wasm.zst" | cut -f1)), gecko.data.zst ($(du -h "$HERE/gecko.data.zst" | cut -f1)), gecko-assets.json"
+  else
+    rm -f "$HERE/gecko.wasm.zst" "$HERE/gecko.data.zst" "$HERE/gecko-assets.json"
+  fi
+fi

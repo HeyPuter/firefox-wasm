@@ -4,7 +4,7 @@
 # build artifacts, the staged GRE, deps, logs, and render/test dumps.
 
 # --- mach/emscripten build trees (huge, fully regenerable) ---
-/obj-full-emscripten/
+/obj-full-emscripten*/
 /obj-js-emscripten/
 
 # --- native / emscripten build artifacts ---
@@ -18,6 +18,10 @@
 *.wasm
 # gecko.data and other emcc preload bundles
 *.data
+
+# zstd-compressed release artifacts + their manifest (make release)
+*.zst
+gecko-assets.json
 
 # --- emscripten JS glue (emitted next to the .wasm above) ---
 *.worker.js

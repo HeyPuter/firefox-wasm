@@ -1,5 +1,23 @@
 # gecko-wasm
 
+
+
+# BUILD INSTRUCTIONS
+
+need packages installed
+- binaryen
+- libpulse-dev
+
+- emsdk install 3.1.56
+- emsdk activate 3.1.56
+- rustup target add wasm32-unknown-emscripten
+- make firefox
+- make vendor
+
+
+
+
+
 Mozilla's Gecko engine (Firefox/SpiderMonkey) ported to browser **WebAssembly**
 (emscripten, `wasm32-unknown-emscripten`): single-process, no e10s, no JIT
 (Portable Baseline Interpreter), WISP networking, rendering web content to a

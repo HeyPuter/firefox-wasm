@@ -1,5 +1,11 @@
 # Full Gecko engine -> emscripten (browser wasm). Phase 2 (WIP).
-mk_add_options MOZ_OBJDIR=/home/velzie/src/gecko-wasm/obj-full-emscripten
+# Release (GECKO_RELEASE=1) uses its own objdir so switching debug<->release does
+# NOT reconfigure/rebuild a shared tree (LTO + the objdir would otherwise thrash).
+if [ "${GECKO_RELEASE:-}" = "1" ]; then
+  mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-emscripten-release
+else
+  mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-emscripten
+fi
 
 ac_add_options --enable-application=browser
 ac_add_options --target=wasm32-unknown-emscripten
@@ -26,6 +32,11 @@ ac_add_options --disable-shared-memory
 ac_add_options --disable-tests
 ac_add_options --disable-debug
 ac_add_options --enable-optimize
+# Release (GECKO_RELEASE=1, set by `make release` / `make ... RELEASE=1`):
+# link-time-optimize the engine. Toggling this reconfigures + rebuilds libxul.
+if [ "${GECKO_RELEASE:-}" = "1" ]; then
+  ac_add_options --enable-lto
+fi
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
 ac_add_options --disable-backgroundtasks
@@ -37,15 +48,15 @@ ac_add_options --without-wasm-sandboxed-libraries
 # of native libs) and emscripten has no ffi.h. Disable it.
 ac_add_options --disable-ctypes
 
-ac_add_options --with-libclang-path=/home/velzie/.mozbuild/clang/lib
+ac_add_options --with-libclang-path=${MOZBUILD_STATE_PATH:-$HOME/.mozbuild}/clang/lib
 
 # Build Gecko's modern in-tree FreeType (2.14.3) for the headless gfx font
 # backend instead of emscripten's ancient bundled port (-sUSE_FREETYPE = 2.6.0,
 # missing FT_Done_MM_Var / variable fonts / COLRv1). tree_freetype is enabled
 # for EMSCRIPTEN in toolkit/moz.configure; expose the headers globally so every
 # dir resolves <ft2build.h> to the in-tree copy, and link the in-tree lib.
-export CFLAGS="-I/home/velzie/src/gecko-wasm/firefox/modules/freetype2/include -pthread"
-export CXXFLAGS="-I/home/velzie/src/gecko-wasm/firefox/modules/freetype2/include -pthread"
+export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
+export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
 export LDFLAGS="-pthread"
 
 CC=emcc
