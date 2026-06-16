@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>WISP socket test</title></head>
+<body>
+<pre id="log"></pre>
+<script>
+  // Config from query string: ?wisp=ws://127.0.0.1:PORT/&port=ORIGINPORT
+  var q = new URLSearchParams(location.search);
+  var wispUrl = q.get('wisp');
+  var originPort = q.get('port');
+  var logEl = document.getElementById('log');
+  function log(s) { logEl.textContent += s + '\n'; console.log(s); }
+  window.__done = null;
+
+  var Module = {
+    preRun: [function (m) {
+      if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) return;
+      WISP.install(m, wispUrl);
+      m.ENV['ORIGIN_HOST'] = '127.0.0.1';
+      m.ENV['ORIGIN_PORT'] = originPort;
+    }],
+    print: function (t) { log(t); if (t.indexOf('SOCKTEST_OK') >= 0) window.__done = true; if (t.indexOf('SOCKTEST_FAIL') >= 0) window.__done = false; },
+    printErr: function (t) { log('[err] ' + t); },
+  };
+</script>
+<script src="socktest.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+import os
+emsdk_path = '/usr/lib/emsdk'
+NODE_JS = emsdk_path + '/node/20.18.0_64bit/bin/node'
+LLVM_ROOT = emsdk_path + '/upstream/bin'
+BINARYEN_ROOT = '/home/velzie/src/gecko-wasm/toolchain/binaryen'
+EMSCRIPTEN_ROOT = emsdk_path + '/upstream/emscripten'

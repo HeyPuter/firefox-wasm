@@ -1,0 +1,54 @@
+# Full Gecko engine -> emscripten (browser wasm). Phase 2 (WIP).
+mk_add_options MOZ_OBJDIR=/home/velzie/src/gecko-wasm/obj-full-emscripten
+
+ac_add_options --enable-application=browser
+ac_add_options --target=wasm32-unknown-emscripten
+
+# wasm: no JIT codegen, no e10s child procs / no IPC. C++ THREADS are enabled via
+# emscripten -pthread (Web Workers + shared wasm linear memory) in CFLAGS below:
+# Gecko needs real concurrency (IPC IOThread pump, timer thread, stylo/worker
+# pools, sync cross-thread dispatch); single-threaded proved impractical at
+# NS_InitXPCOM. NOTE: keep --disable-shared-memory (that's the JS-visible
+# SharedArrayBuffer+Atomics feature, NOT the C++ thread memory; enabling it broke
+# the ArrayBuffer-union WebIDL codegen, and content SAB isn't needed to render).
+ac_add_options --disable-jit
+# Portable Baseline Interpreter: runs CacheIR inline caches in portable C++ with
+# NO codegen, so it works on this JIT-less wasm target and is far faster than the
+# plain bytecode interpreter (SpiderMonkey's slowest tier, our only option once
+# all native-codegen tiers are off). Both options are needed: the base define
+# compiles PBL + gates IsPortableBaselineInterpreterEnabled; -force makes it the
+# default tier eagerly (warmup 0).
+ac_add_options --enable-portable-baseline-interp
+ac_add_options --enable-portable-baseline-interp-force
+ac_add_options --disable-shared-memory
+
+# Trim the surface for a first headless build.
+ac_add_options --disable-tests
+ac_add_options --disable-debug
+ac_add_options --enable-optimize
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-backgroundtasks
+ac_add_options --disable-webrtc
+# RLBox sandboxing compiles libs with a wasi target; nonsensical when the whole
+# engine is already wasm. Disable it.
+ac_add_options --without-wasm-sandboxed-libraries
+# js-ctypes is a JS->native-library FFI (libffi); meaningless in wasm (no dlopen
+# of native libs) and emscripten has no ffi.h. Disable it.
+ac_add_options --disable-ctypes
+
+ac_add_options --with-libclang-path=/home/velzie/.mozbuild/clang/lib
+
+# Build Gecko's modern in-tree FreeType (2.14.3) for the headless gfx font
+# backend instead of emscripten's ancient bundled port (-sUSE_FREETYPE = 2.6.0,
+# missing FT_Done_MM_Var / variable fonts / COLRv1). tree_freetype is enabled
+# for EMSCRIPTEN in toolkit/moz.configure; expose the headers globally so every
+# dir resolves <ft2build.h> to the in-tree copy, and link the in-tree lib.
+export CFLAGS="-I/home/velzie/src/gecko-wasm/firefox/modules/freetype2/include -pthread"
+export CXXFLAGS="-I/home/velzie/src/gecko-wasm/firefox/modules/freetype2/include -pthread"
+export LDFLAGS="-pthread"
+
+CC=emcc
+CXX=em++
+HOST_CC=clang
+HOST_CXX=clang++

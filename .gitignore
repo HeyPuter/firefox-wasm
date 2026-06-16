@@ -1,0 +1,56 @@
+# gecko-wasm root repo: the embedder + build harness. Tracks source (embed*/,
+# *.cpp/.h/.sh, the source *.js, *.cjs, *.html, em_config, mozconfig.*, *.md,
+# toolchain/) and ignores everything regenerable: build trees, emscripten/native
+# build artifacts, the staged GRE, deps, logs, and render/test dumps.
+
+# --- mach/emscripten build trees (huge, fully regenerable) ---
+/obj-full-emscripten/
+/obj-js-emscripten/
+
+# --- native / emscripten build artifacts ---
+# (.gitignore has no inline comments; keep patterns on their own lines)
+*.o
+*.a
+*.bc
+# libxul.stripped.so, lib*.stripped.so, ...
+*.so
+# gecko.wasm, gltest.wasm, sm.wasm, test fixtures (all regenerable)
+*.wasm
+# gecko.data and other emcc preload bundles
+*.data
+
+# --- emscripten JS glue (emitted next to the .wasm above) ---
+*.worker.js
+gecko.js
+gltest.js
+socktest.js
+/web/sm.js
+
+# --- staged GRE (copied from dist/bin by stage-gre.sh at build time) ---
+gre-stage/
+
+# --- dependencies ---
+node_modules/
+
+# --- the Gecko engine fork (published as its own firefox/ repository) ---
+/firefox/
+
+# --- logs & render/test artifacts ---
+*.log
+*.png
+*.bgra
+
+# --- OS / editor cruft ---
+.DS_Store
+*.swp
+*~
+
+# build error logs
+*.err
+
+# node deps (also as symlinks, e.g. embed-chrome/node_modules)
+node_modules
+
+# machine-specific toolchain shim: symlinks into the local emsdk (em_config
+# BINARYEN_ROOT points here). Recreate per-machine; do not commit the symlinks.
+/toolchain/binaryen/

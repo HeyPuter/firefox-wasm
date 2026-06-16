@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>webgl test2</title>
+<style>html,body{margin:0;background:#fff}#c{display:block}#log{font:14px monospace;padding:8px}</style>
+</head><body>
+<canvas id="c" width="400" height="300"></canvas>
+<div id="log">starting…</div>
+<script>
+function log(s){document.getElementById('log').textContent=s;document.title=s;console.error('[webgl-test2] '+s);}
+try {
+  var cv = document.getElementById('c');
+  var gl = cv.getContext('webgl2', {preserveDrawingBuffer:true});
+  if (!gl) { log('NO_WEBGL'); }
+  else {
+    // a procedurally-generated checkerboard texture
+    var N = 64, data = new Uint8Array(N*N*4);
+    for (var y=0;y<N;y++) for (var x=0;x<N;x++){ var i=(y*N+x)*4; var c=((x>>3)+(y>>3))&1?255:40;
+      data[i]=c; data[i+1]=(x*4)&255; data[i+2]=(y*4)&255; data[i+3]=255; }
+    var tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,N,N,0,gl.RGBA,gl.UNSIGNED_BYTE,data);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    var vs=gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs,'#version 300 es\nin vec2 p; out vec2 uv; uniform float a;'+
+      'void main(){ uv=p*0.5+0.5; float c=cos(a),s=sin(a); mat2 r=mat2(c,-s,s,c); gl_Position=vec4(r*p*0.8,0.0,1.0);}');
+    gl.compileShader(vs);
+    var fs=gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs,'#version 300 es\nprecision mediump float; in vec2 uv; out vec4 o; uniform sampler2D t;'+
+      'void main(){ o=texture(t,uv);}');
+    gl.compileShader(fs);
+    var pr=gl.createProgram(); gl.attachShader(pr,vs); gl.attachShader(pr,fs); gl.linkProgram(pr);
+    if(!gl.getProgramParameter(pr,gl.LINK_STATUS)){ log('LINK_FAIL '+gl.getShaderInfoLog(fs)+gl.getShaderInfoLog(vs)); }
+    else {
+      gl.useProgram(pr);
+      var buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+      gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
+      var pl=gl.getAttribLocation(pr,'p'); gl.enableVertexAttribArray(pl); gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+      var al=gl.getUniformLocation(pr,'a'); var tl=gl.getUniformLocation(pr,'t');
+      gl.uniform1i(tl,0);
+      var logged=false, t0=Date.now();
+      function frame(){
+        gl.clearColor(0.1,0.1,0.12,1); gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.uniform1f(al,(Date.now()-t0)/1000.0);
+        gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+        if(!logged){ logged=true; var px=new Uint8Array(4);
+          gl.readPixels(200,150,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);
+          log('WEBGL2_TEX_OK err='+gl.getError()+' centre=['+px.join(',')+']'); }
+        requestAnimationFrame(frame);
+      }
+      frame();
+    }
+  }
+} catch(e){ log('EXCEPTION '+(e&&e.message?e.message:e)); }
+</script>
+</body></html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>webgl test</title>
+<style>html,body{margin:0;background:#fff}#c{display:block}#log{font:14px monospace;padding:8px}</style>
+</head><body>
+<canvas id="c" width="400" height="300"></canvas>
+<div id="log">starting…</div>
+<script>
+function log(s){document.getElementById('log').textContent=s;document.title=s;console.error('[webgl-test] '+s);}
+try {
+  const cv = document.getElementById('c');
+  const opts = { preserveDrawingBuffer: true };
+  const gl = cv.getContext('webgl2', opts) || cv.getContext('webgl', opts);
+  if (!gl) { log('NO_WEBGL: getContext returned null'); }
+  else {
+    const isV2 = (typeof WebGL2RenderingContext !== 'undefined') && (gl instanceof WebGL2RenderingContext);
+    // Clear to a distinctive dark blue so the canvas area is obviously GL output.
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.clearColor(0.04, 0.06, 0.20, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    // A gradient triangle (red/green/blue corners).
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, 'attribute vec2 p; attribute vec3 c; varying vec3 vc;' +
+      'void main(){ vc=c; gl_Position=vec4(p,0.0,1.0); }');
+    gl.compileShader(vs);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, 'precision mediump float; varying vec3 vc;' +
+      'void main(){ gl_FragColor=vec4(vc,1.0); }');
+    gl.compileShader(fs);
+    const pr = gl.createProgram();
+    gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) {
+      log('LINK_FAIL: ' + gl.getProgramInfoLog(pr));
+    } else {
+      gl.useProgram(pr);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      // interleaved: x,y, r,g,b
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        0.0,  0.8,  1, 0, 0,
+       -0.8, -0.8,  0, 1, 0,
+        0.8, -0.8,  0, 0, 1,
+      ]), gl.STATIC_DRAW);
+      const pl = gl.getAttribLocation(pr, 'p');
+      const cl = gl.getAttribLocation(pr, 'c');
+      gl.enableVertexAttribArray(pl);
+      gl.vertexAttribPointer(pl, 2, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(cl);
+      gl.vertexAttribPointer(cl, 3, gl.FLOAT, false, 20, 8);
+      let logged = false;
+      function frame() {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        if (!logged) {
+          logged = true;
+          const err = gl.getError();
+          const px = new Uint8Array(4);
+          gl.readPixels(cv.width >> 1, cv.height >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          const renderer = gl.getParameter(gl.RENDERER);
+          log('WEBGL_OK v2=' + isV2 + ' err=' + err + ' centre=[' + px.join(',') + '] renderer=' + renderer);
+        }
+        requestAnimationFrame(frame);
+      }
+      frame();
+    }
+  }
+} catch (e) { log('EXCEPTION: ' + (e && e.message ? e.message : e)); }
+</script>
+</body></html>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>wasm test</title></head>
+<body style="font:16px monospace;padding:12px">
+<div id="log">running…</div>
+<script>
+function log(s){document.getElementById('log').textContent=s;document.title=s;console.error('[wasm-test] '+s);}
+// (module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
+var bytes = new Uint8Array([
+  0,97,115,109, 1,0,0,0,
+  1,7, 1, 96,2,127,127,1,127,
+  3,2, 1,0,
+  7,7, 1, 3,97,100,100, 0,0,
+  10,9, 1, 7,0, 32,0,32,1,106,11
+]);
+(async function(){
+  try {
+    var t0 = Date.now();
+    var res = await WebAssembly.instantiate(bytes, {});
+    var add = res.instance.exports.add;
+    var v = add(40, 2);
+    // a hot loop to gauge speed (interpreter vs JIT)
+    var acc = 0; for (var i=0;i<2000000;i++) acc = add(acc, 1);
+    log('WASM_OK add(40,2)='+v+' loopAcc='+acc+' ms='+(Date.now()-t0));
+  } catch(e){ log('WASM_FAIL '+(e&&e.message?e.message:e)); }
+})();
+</script>
+</body></html>

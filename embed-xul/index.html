@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gecko (libxul) → WebAssembly — mini browser</title>
+  <style>
+    body { font: 13px/1.5 ui-monospace, monospace; max-width: 940px; margin: 1.2rem auto; }
+    h1 { font-size: 1.1rem; }
+    #bar { display: flex; gap: .4rem; margin: .6rem 0; }
+    #addr { flex: 1; padding: .45rem .6rem; font: inherit; }
+    #go { padding: .45rem 1rem; font: inherit; cursor: pointer; }
+    #go:disabled { opacity: .5; cursor: default; }
+    #status { font-weight: bold; }
+    #status[data-ready="1"] { color: #0a0; }
+    #status[data-ready="0"] { color: #b00; }
+    #progress { margin: .5rem 0; }
+    #progressTrack { height: 12px; background: #e8e8ee; border-radius: 6px; overflow: hidden; }
+    #progressFill { height: 100%; width: 0; background: linear-gradient(90deg, #5865f2, #404eed);
+                    transition: width .12s ease-out; }
+    #progressFill.indeterminate { width: 45%; transition: none; animation: progIndet 1.1s linear infinite; }
+    @keyframes progIndet { 0% { margin-left: -45%; } 100% { margin-left: 100%; } }
+    #progressText { font: 11px/1.4 ui-monospace, monospace; color: #555; margin-top: .25rem; }
+    .presets button { font: inherit; margin: 0 .3rem .3rem 0; padding: .2rem .5rem; cursor: pointer; }
+    canvas { border: 1px solid #ccc; image-rendering: pixelated; display: block; background: #fff; }
+    pre { background: #111; color: #0f0; padding: .6rem; white-space: pre-wrap;
+          max-height: 38vh; overflow: auto; margin-top: .8rem; }
+  </style>
+</head>
+<body>
+  <h1>Gecko engine (libxul), compiled to WebAssembly</h1>
+  <p>cross-origin-isolated: <b id="coi">?</b>
+     &nbsp;|&nbsp; Status: <span id="status" data-ready="">loading…</span></p>
+
+  <div id="progress">
+    <div id="progressTrack"><div id="progressFill"></div></div>
+    <div id="progressText">loading engine…</div>
+  </div>
+
+  <div id="bar">
+    <input id="addr" type="text" spellcheck="false"
+           placeholder="enter a URL or data: address…"
+           value="data:text/html,<body style='margin:0;background:white'><div style='width:400px;height:300px;background:rgb(0,102,204)'></div><div style='width:200px;height:150px;background:rgb(204,0,0);margin-left:120px'></div></body>" />
+    <button id="go" disabled>Go</button>
+  </div>
+  <div class="presets">
+    <button data-url="data:text/html,<h1 style='color:teal;font-family:sans-serif'>Hello from Gecko</h1><p>rendered in WebAssembly</p>">heading + text</button>
+    <button data-url="data:text/html,<body style='margin:0'><div style='width:800px;height:200px;background:linear-gradient(90deg,red,orange,yellow,green,blue,violet)'></div></body>">gradient</button>
+    <button data-url="data:text/html,<table border='1' cellpadding='8'><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>">table</button>
+  </div>
+
+  <canvas id="screen" width="800" height="600" tabindex="0"
+          title="click to interact; keyboard goes to the page"></canvas>
+  <pre id="log"></pre>
+
+  <script src="gecko.js"></script>
+  <script>
+    // XulCmd layout (see embed-xul.cpp): state@0 w@4 h@8 result(ptr)@12 len@16
+    // url@20[8192], then the input-event fields appended after url[].
+    const ST = 0, W = 4, H = 8, RES = 12, LEN = 16, URL = 20;
+    const OP = URL + 8192, EVTYPE = OP + 4, EX = OP + 8, EY = OP + 12,
+          BTN = OP + 16, BTNS = OP + 20, CLICKS = OP + 24, MODS = OP + 28,
+          KEYCODE = OP + 32, CHARCODE = OP + 36, DX = OP + 40, DY = OP + 44,
+          KEYVAL = OP + 48, CURSOR = KEYVAL + 64;
+    // StyleCursorKind (see ServoStyleConsts.h) index -> CSS cursor keyword.
+    const CURSORS = ['none', 'default', 'pointer', 'context-menu', 'help',
+      'progress', 'wait', 'cell', 'crosshair', 'text', 'vertical-text', 'alias',
+      'copy', 'move', 'no-drop', 'not-allowed', 'grab', 'grabbing', 'e-resize',
+      'n-resize', 'ne-resize', 'nw-resize', 's-resize', 'se-resize', 'sw-resize',
+      'w-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize',
+      'col-resize', 'row-resize', 'all-scroll', 'zoom-in', 'zoom-out', 'auto'];
+    // op codes (must match embed-xul.cpp): 0 load, 1 mouse, 2 key, 3 wheel, 4 paint.
+    const OP_LOAD = 0, OP_MOUSE = 1, OP_KEY = 2, OP_WHEEL = 3, OP_PAINT = 4;
+    // nsIDOMWindowUtils MODIFIER_* bits.
+    const MOD_ALT = 0x1, MOD_CTRL = 0x2, MOD_SHIFT = 0x4, MOD_META = 0x8;
+    const WIDTH = 800, HEIGHT = 600;
+
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    const addrEl = document.getElementById('addr');
+    const goEl = document.getElementById('go');
+    const canvas = document.getElementById('screen');
+    // GPU mode (?gpu=1): WebRender composites directly to this <canvas> via a
+    // WebGL2 context created inside the engine, so the page must NOT grab a 2D
+    // context (a canvas can only have one context) and must not software-blit.
+    const gpuMode = new URLSearchParams(location.search).has('gpu');
+    // ?glpass=1 -> route content canvas.getContext('webgl'/'webgl2') to a real
+    // host WebGL context (passthrough) read back into the compositor.
+    const glPassMode = new URLSearchParams(location.search).has('glpass');
+    const ctx = gpuMode ? null : canvas.getContext('2d');
+    const enc = new TextEncoder();
+
+    function log(...a) { const s = a.join(' '); logEl.textContent += s + '\n';
+      logEl.scrollTop = logEl.scrollHeight; console.log(s); }
+    function setStatus(t, ready) { statusEl.textContent = t;
+      statusEl.setAttribute('data-ready', ready ? '1' : '0'); }
+
+    document.getElementById('coi').textContent = String(self.crossOriginIsolated);
+
+    // WISP networking endpoint. Default to this page's own origin (server.cjs serves
+    // a WISP endpoint on the same host:port), or override with ?wisp=ws://host:port/.
+    // Real http(s):// URLs are fetched by Necko over WISP.
+    const wispUrl = new URLSearchParams(location.search).get('wisp') ||
+      ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/');
+
+    let mod = null, cmd = 0, busy = false;
+    let resolveReady;
+    const readyP = new Promise((r) => (resolveReady = r));
+
+    function onStdout(t) {
+      log('[out]', t);
+      if (typeof t === 'string' && t.includes('READY cmd=')) resolveReady();
+    }
+
+    // Blit the BGRA result in the wasm heap (RES/LEN) into the canvas.
+    function blit() {
+      if (gpuMode) return 0;  // WebRender presents to the canvas directly; no CPU blit
+      const u8 = mod.HEAPU8, i32 = mod.HEAP32;
+      const resPtr = i32[(cmd + RES) >> 2], len = i32[(cmd + LEN) >> 2];
+      if (!resPtr || !len) return 0;
+      const src = u8.subarray(resPtr, resPtr + len);
+      const img = ctx.createImageData(WIDTH, HEIGHT);
+      const d = img.data;
+      let nonWhite = 0;
+      for (let i = 0; i + 3 < len; i += 4) {
+        const b = src[i], g = src[i + 1], r = src[i + 2];  // B8G8R8A8 -> RGBA
+        d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+        if (r !== 255 || g !== 255 || b !== 255) nonWhite++;
+      }
+      ctx.putImageData(img, 0, 0);
+      window.__lastRender = { nonWhite, w: WIDTH, h: HEIGHT };
+      return nonWhite;
+    }
+
+    // Run one command: write its fields into the shared struct, Atomics-signal the
+    // Gecko pthread (state=1), poll until done (state 3) or error (-1), then blit.
+    // Atomics.load is allowed on the main thread; .wait is not.
+    async function runCmd(item) {
+      const u8 = () => mod.HEAPU8, i32 = () => mod.HEAP32;  // re-fetch (heap can grow)
+      const set = (off, v) => { i32()[(cmd + off) >> 2] = v | 0; };
+      set(W, WIDTH); set(H, HEIGHT);
+      set(OP, item.op);
+      set(EVTYPE, item.evType || 0);
+      set(EX, item.x || 0); set(EY, item.y || 0);
+      set(BTN, item.button || 0);
+      set(BTNS, item.buttons == null ? -1 : item.buttons);
+      set(CLICKS, item.clickCount || 0);
+      set(MODS, item.modifiers || 0);
+      set(KEYCODE, item.keyCode || 0);
+      set(CHARCODE, item.charCode || 0);
+      set(DX, item.deltaX || 0); set(DY, item.deltaY || 0);
+      if (item.op === OP_LOAD) {
+        const bytes = enc.encode(item.url || '');
+        if (bytes.length >= 8190) { log('[harness] URL too long'); return null; }
+        u8().set(bytes, cmd + URL); u8()[cmd + URL + bytes.length] = 0;
+      }
+      if (item.op === OP_KEY) {
+        const kb = enc.encode(item.key || '');
+        const n = Math.min(kb.length, 63);
+        u8().set(kb.subarray(0, n), cmd + KEYVAL); u8()[cmd + KEYVAL + n] = 0;
+      }
+      Atomics.store(i32(), (cmd + ST) >> 2, 1);  // request
+      const start = performance.now();
+      let st = 1;
+      while (performance.now() - start < 120000) {
+        st = Atomics.load(i32(), (cmd + ST) >> 2);
+        if (st === 3 || st === -1) break;
+        await new Promise((r) => setTimeout(r, item.op === OP_LOAD ? 20 : 4));
+      }
+      if (st !== 3) { log('[harness] cmd failed/timeout state=' + st); return null; }
+      const n = blit();
+      // Mirror the content's cursor (cursor: pointer over links, text over inputs,
+      // resize handles, etc.) onto the canvas so the host pointer matches.
+      if (item.op === OP_MOUSE) {
+        const ck = i32()[(cmd + CURSOR) >> 2];
+        canvas.style.cursor = CURSORS[ck] || 'auto';
+      }
+      return n;
+    }
+
+    // Serialized command queue. Each input handler enqueues a command; a single
+    // worker runs them in order so the shared struct is never raced. Consecutive
+    // mouse-moves are coalesced (keep only the latest) so fast motion can't back up.
+    const queue = [];
+    let running = false;
+    function enqueue(item) {
+      return new Promise((resolve) => {
+        item.resolve = resolve;
+        if (item.op === OP_MOUSE && item.evType === 0 && queue.length) {
+          const last = queue[queue.length - 1];
+          if (last.op === OP_MOUSE && last.evType === 0) {
+            last.resolve(null);          // drop superseded move
+            queue[queue.length - 1] = item;
+            drainQueue();
+            return;
+          }
+        }
+        queue.push(item);
+        drainQueue();
+      });
+    }
+    async function drainQueue() {
+      if (running || !mod || !cmd) return;
+      running = true;
+      try {
+        while (queue.length) {
+          const item = queue.shift();
+          let r = null;
+          try { r = await runCmd(item); } catch (e) { log('[harness] cmd error', e); }
+          item.resolve(r);
+        }
+      } finally { running = false; }
+    }
+
+    // Continuous repaint: while idle, periodically ask the engine to repaint the
+    // live document (op=4) so animations / async DOM changes show up, not just a
+    // single frame after load. Coalesced via the queue (only when nothing else is
+    // pending), and time-gated so it doesn't peg the CPU.
+    let lastPaint = 0;
+    const PAINT_INTERVAL = 40;  // ms (~25fps cap)
+    function startPaintLoop() {
+      const tick = () => {
+        const now = performance.now();
+        if (mod && cmd && !running && queue.length === 0 &&
+            now - lastPaint >= PAINT_INTERVAL) {
+          lastPaint = now;
+          enqueue({ op: OP_PAINT });
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+
+    async function renderUrl(url) {
+      setStatus('rendering ' + url.slice(0, 48) + '…', true);
+      const n = await enqueue({ op: OP_LOAD, url });
+      setStatus(n == null ? 'render failed' : 'rendered (' + n + ' px)', n != null);
+      return n;
+    }
+    window.geckoRender = renderUrl;  // Playwright test hook
+
+    // --- input forwarding -------------------------------------------------
+    // Map a DOM mouse/wheel event to canvas pixel coords (canvas backing is
+    // WIDTHxHEIGHT; CSS box may be a different size).
+    function canvasXY(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: Math.round((e.clientX - rect.left) * (WIDTH / rect.width)),
+        y: Math.round((e.clientY - rect.top) * (HEIGHT / rect.height)),
+      };
+    }
+    function modsOf(e) {
+      return (e.altKey ? MOD_ALT : 0) | (e.ctrlKey ? MOD_CTRL : 0) |
+             (e.shiftKey ? MOD_SHIFT : 0) | (e.metaKey ? MOD_META : 0);
+    }
+    window.geckoInput = enqueue;  // Playwright test hook (synthesize raw events)
+
+    canvas.addEventListener('mousemove', (e) => {
+      const p = canvasXY(e);
+      enqueue({ op: OP_MOUSE, evType: 0, x: p.x, y: p.y, buttons: e.buttons, modifiers: modsOf(e) });
+    });
+    canvas.addEventListener('mousedown', (e) => {
+      canvas.focus();
+      const p = canvasXY(e);
+      enqueue({ op: OP_MOUSE, evType: 1, x: p.x, y: p.y, button: e.button,
+                buttons: e.buttons, clickCount: e.detail || 1, modifiers: modsOf(e) });
+      e.preventDefault();
+    });
+    canvas.addEventListener('mouseup', (e) => {
+      const p = canvasXY(e);
+      enqueue({ op: OP_MOUSE, evType: 2, x: p.x, y: p.y, button: e.button,
+                buttons: e.buttons, clickCount: e.detail || 1, modifiers: modsOf(e) });
+      e.preventDefault();
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('wheel', (e) => {
+      const p = canvasXY(e);
+      enqueue({ op: OP_WHEEL, x: p.x, y: p.y, deltaX: Math.round(e.deltaX),
+                deltaY: Math.round(e.deltaY), modifiers: modsOf(e) });
+      e.preventDefault();
+    }, { passive: false });
+
+    function keyItem(e, evType) {
+      const printable = e.key.length === 1;
+      return {
+        op: OP_KEY, evType, key: e.key, keyCode: e.keyCode,
+        charCode: printable ? e.key.codePointAt(0) : 0, modifiers: modsOf(e),
+      };
+    }
+    canvas.addEventListener('keydown', (e) => { enqueue(keyItem(e, 0)); e.preventDefault(); });
+    canvas.addEventListener('keyup', (e) => { enqueue(keyItem(e, 1)); e.preventDefault(); });
+
+    goEl.addEventListener('click', () => renderUrl(addrEl.value));
+    addrEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') renderUrl(addrEl.value); });
+    document.querySelectorAll('.presets button').forEach((b) =>
+      b.addEventListener('click', () => { addrEl.value = b.dataset.url; renderUrl(b.dataset.url); }));
+
+    // --- wasm load progress bar ----------------------------------------------
+    const progEl = document.getElementById('progress');
+    const fillEl = document.getElementById('progressFill');
+    const ptextEl = document.getElementById('progressText');
+    let wasmLoaded = 0, wasmTotal = 0;
+    function refreshProgress(phase) {
+      const haveTotal = wasmTotal > 0;
+      if (haveTotal) {
+        fillEl.classList.remove('indeterminate');
+        fillEl.style.width = Math.min(100, wasmLoaded / wasmTotal * 100).toFixed(1) + '%';
+      } else if (wasmLoaded > 0) {
+        // No Content-Length (chunked transfer): show an indeterminate bar + MB.
+        fillEl.classList.add('indeterminate');
+      }
+      if (phase) ptextEl.textContent = phase;
+      else if (haveTotal) ptextEl.textContent = 'downloading engine ' +
+        Math.round(wasmLoaded / wasmTotal * 100) + '% (' + (wasmTotal / 1048576).toFixed(0) + ' MB)';
+      else ptextEl.textContent = 'downloading engine ' + (wasmLoaded / 1048576).toFixed(0) + ' MB';
+    }
+    // Intercept the gecko.wasm fetch to report download bytes. Only the runtime
+    // main thread fetches the wasm (pthread workers receive the compiled module),
+    // and we pass the body through a counting stream so streaming compilation is
+    // preserved.
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = (url, opts) => {
+      const p = _origFetch(url, opts);
+      if (typeof url === 'string' && url.endsWith('.wasm')) {
+        return p.then((resp) => {
+          if (!resp.ok || !resp.body) return resp;
+          wasmTotal = +resp.headers.get('Content-Length') || 0;
+          const reader = resp.body.getReader();
+          const stream = new ReadableStream({
+            start(ctrl) {
+              (function pump() {
+                reader.read().then(({ done, value }) => {
+                  if (done) { ctrl.close(); return; }
+                  wasmLoaded += value.byteLength;
+                  refreshProgress();
+                  ctrl.enqueue(value);
+                  pump();
+                }).catch((e) => ctrl.error(e));
+              })();
+            },
+          });
+          return new Response(stream, { headers: resp.headers, status: resp.status, statusText: resp.statusText });
+        });
+      }
+      return p;
+    };
+
+    setStatus('loading wasm…', false);
+    createGecko({
+      // emscripten loader progress: byte counts for the preloaded data file, plus
+      // phase messages ("Preparing...", "Running..."). The wasm download itself is
+      // tracked by the fetch wrapper above.
+      setStatus: (text) => {
+        const m = text && text.match(/\((\d+(?:\.\d+)?)\/(\d+)\)/);
+        if (m) refreshProgress('downloading data ' + Math.round(parseFloat(m[1]) / parseFloat(m[2]) * 100) + '%');
+        else if (text) refreshProgress(text);
+      },
+      preRun: [(m) => {
+        m.ENV['GRE_DIR'] = '/gre';
+        m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
+        // Opt in to GPU compositing (in-process WebRender -> WebGL2 -> this
+        // <canvas>). Gated so the default software path is unchanged.
+        if (gpuMode) m.ENV['GECKO_GPU'] = '1';
+        if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
+        const mozlog = new URLSearchParams(location.search).get('mozlog');
+        if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
+        if (wispUrl && typeof WISP !== 'undefined') {
+          WISP.install(m, wispUrl);
+          log('[harness] WISP networking enabled via ' + wispUrl);
+        }
+      }],
+      print: onStdout,
+      printErr: (t) => log('[err]', t),
+      onAbort: (w) => { log('[ABORT]', w); setStatus('aborted', false); },
+    }).then(async (m) => {
+      mod = m;
+      log('[harness] module instantiated; waiting for engine READY…');
+      await readyP;
+      cmd = mod._xul_cmd_ptr();
+      log('[harness] engine READY, cmd=' + cmd);
+      setStatus('ready — enter a URL', true);
+      progEl.style.display = 'none';
+      goEl.disabled = false;
+      window.__geckoReady = true;
+      startPaintLoop();
+    }).catch((e) => {
+      log('[harness] instantiation failed:', e && e.message ? e.message : e);
+      if (e && e.stack) log(e.stack);
+      setStatus('instantiation failed', false);
+    });
+  </script>
+</body>
+</html>

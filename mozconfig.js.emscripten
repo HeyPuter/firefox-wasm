@@ -1,0 +1,27 @@
+# SpiderMonkey -> emscripten (browser wasm). Phase 1 toolchain proof.
+# Based on js/src/devtools/automation/variants/wasi, retargeted to emscripten.
+mk_add_options MOZ_OBJDIR=/home/velzie/src/gecko-wasm/obj-js-emscripten
+
+ac_add_options --enable-project=js
+ac_add_options --target=wasm32-unknown-emscripten
+
+# wasm has no JIT codegen and (for now) no shared memory / threads.
+ac_add_options --disable-jit
+ac_add_options --disable-shared-js
+ac_add_options --disable-shared-memory
+
+# Trim heavy deps for the first build.
+ac_add_options --without-intl-api
+ac_add_options --without-system-zlib
+ac_add_options --disable-stdcxx-compat
+ac_add_options --disable-tests
+ac_add_options --disable-js-shell
+ac_add_options --disable-clang-plugin
+ac_add_options --disable-debug-symbols
+ac_add_options --enable-optimize
+
+# Target compiler = emscripten; host tools = native clang.
+CC=emcc
+CXX=em++
+HOST_CC=clang
+HOST_CXX=clang++

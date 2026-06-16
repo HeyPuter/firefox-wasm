@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>wasm shared memory test</title></head>
+<body style="font:13px monospace;padding:12px;white-space:pre">
+<div id="log">running…</div>
+<script>
+function done(s){document.getElementById('log').textContent=s;document.title=s.split('\n')[0];}
+// imports a SHARED env.memory (min 1, max 10); exports store(addr,val)/load(addr)
+var memBytes = new Uint8Array([
+  0,97,115,109, 1,0,0,0,
+  1,11, 2, 96,2,127,127,0, 96,1,127,1,127,
+  2,16, 1, 3,101,110,118, 6,109,101,109,111,114,121, 2,3,1,10,
+  3,3, 2, 0,1,
+  7,16, 2, 5,115,116,111,114,101,0,0, 4,108,111,97,100,0,1,
+  10,19, 2, 9,0,32,0,32,1,58,0,0,11, 7,0,32,0,45,0,0,11
+]);
+(async function(){
+  var R = [];
+  function chk(n,c){ R.push((c?'OK  ':'FAIL')+' '+n); }
+  try {
+    // The emscripten pattern that hit "bad memory":
+    var mem = new WebAssembly.Memory({ initial: 1, maximum: 10, shared: true });
+    chk('buffer instanceof SharedArrayBuffer', mem.buffer instanceof SharedArrayBuffer);
+
+    var u8 = new Uint8Array(mem.buffer);
+    u8[10] = 42;
+    var inst = (await WebAssembly.instantiate(memBytes, { env: { memory: mem } })).instance;
+    chk('guest->host (load 42)', inst.exports.load(10) === 42);
+    inst.exports.store(20, 99);
+    chk('host->guest (read 99)', new Uint8Array(mem.buffer)[20] === 99);
+
+    var pass = R.every(function(s){ return s.indexOf('OK')===0; });
+    done((pass?'SHMEM_PASS':'SHMEM_FAIL')+'\n'+R.join('\n'));
+  } catch(e){ done('SHMEM_THROW '+(e&&e.message?e.message:e)+'\n'+R.join('\n')); }
+})();
+</script>
+</body></html>
