@@ -8,14 +8,24 @@ ROOT="$(cd "$HERE/.." && pwd)"
 OBJDIR="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJDIR="${OBJDIR}-release"
 DISTBIN="$OBJDIR/dist/bin"
-STRIP="${EMSDK:-/usr/lib/emsdk}/upstream/bin/llvm-strip"
 
-# llvm-strip/objcopy corrupt this object's wasm reloc table ("invalid relocation
-# offset"), so DON'T strip here -- copy the unstripped libxul.so and let the link
-# (-Wl,--strip-debug in build-embed-full.sh) strip the final module instead.
-echo ">> copying unstripped libxul.so -> libxul.stripped.so ($(date +%H:%M:%S)) ..."
-cp "$DISTBIN/libxul.so" "$HERE/libxul.stripped.so"
-ls -la "$HERE/libxul.stripped.so" | awk '{print $5,$9}'
+# Stage the engine libs the embedder links against (all built by `mach build` into
+# dist/bin). Copy them UNSTRIPPED and let the final emcc link (-Wl,--strip-debug in
+# build-embed-full.sh) strip the combined module: llvm-strip/objcopy corrupt these
+# relocatable wasm .so reloc tables ("invalid relocation offset") when stripped
+# directly (notably libnss3's static softoken).
+echo ">> staging engine libs from $DISTBIN ($(date +%H:%M:%S)) ..."
+miss=0
+for lib in libxul libnss3 libgkcodecs; do
+  src="$DISTBIN/$lib.so"
+  if [ ! -e "$src" ]; then
+    echo "!! missing $src -- did 'mach build' complete? (NSS + gkcodecs are part of the engine build)"
+    miss=1; continue
+  fi
+  cp "$src" "$HERE/$lib.stripped.so"
+  ls -la "$HERE/$lib.stripped.so" | awk '{print $5,$9}'
+done
+[ "$miss" = 0 ] || { echo ">> aborting: missing engine libs"; exit 1; }
 
 echo ">> relinking web build ($(date +%H:%M:%S)) ..."
 TARGET=web bash "$HERE/build-embed-full.sh" 2>&1 | grep -E "compiling|error:|link rc=|pthread-fwd"
