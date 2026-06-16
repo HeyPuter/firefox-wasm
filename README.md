@@ -62,10 +62,12 @@ that are intentionally gitignored.
 - **`wisp-server-node`** — runtime networking; `server.cjs` `require()`s it
   (vendored under `embed-xul/node_modules/`).
 
-> `em_config` (committed) derives its paths from `$EMSDK` + `PATH`, so it needs no
-> editing. `mozconfig.full.emscripten` still has absolute paths — if your checkout
-> isn't at `/home/velzie/src/gecko-wasm`, rewrite them (and the `DISTBIN`/`STRIP`
-> constants in `embed-xul/restrip-relink-web.sh`).
+> The build is path-independent: `em_config` derives its paths from `$EMSDK` +
+> `PATH`, `mozconfig.full.emscripten` derives the objdir and FreeType include from
+> `$topsrcdir`, and the embed scripts locate the objdir relative to themselves — so
+> nothing needs editing wherever you clone. libclang defaults to mach bootstrap's
+> copy (`$MOZBUILD_STATE_PATH/clang/lib`); export `LIBCLANG_PATH` to use a
+> distro/CI libclang instead.
 
 ## 2. Rust std dependency vendoring (gitignored — regenerate)
 

@@ -55,7 +55,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang llvm-dev libclang-dev python3 mercurial unzip
-          echo "LIBCLANG_LIBDIR=$(llvm-config --libdir)" >> "$GITHUB_ENV"
+          # mozconfig.full.emscripten reads $LIBCLANG_PATH for --with-libclang-path.
+          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
 
       - name: Set up emsdk ${{ env.EMSDK_VERSION }}
         uses: mymindstorm/setup-emsdk@v14
@@ -83,14 +84,8 @@ jobs:
       - name: Clone the pinned Gecko engine fork (depth 1)
         run: make firefox
 
-      - name: Rewrite mozconfig absolute paths for this runner
-        run: |
-          sed -i \
-            -e "s#/home/velzie/src/gecko-wasm#${GITHUB_WORKSPACE}#g" \
-            -e "s#--with-libclang-path=/home/velzie/.mozbuild/clang/lib#--with-libclang-path=${LIBCLANG_LIBDIR}#g" \
-            -e "s#/home/velzie/.mozbuild#${MOZBUILD_STATE_PATH}#g" \
-            mozconfig.full.emscripten
-          grep -nE 'MOZ_OBJDIR|libclang|CFLAGS' mozconfig.full.emscripten
+      # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
+      # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
       - name: "Build (release: engine LTO + wasm-opt + zstd) — long"
         run: make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink (-O3) -> zstd

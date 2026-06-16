@@ -48,7 +48,9 @@ ac_add_options --without-wasm-sandboxed-libraries
 # of native libs) and emscripten has no ffi.h. Disable it.
 ac_add_options --disable-ctypes
 
-ac_add_options --with-libclang-path=${MOZBUILD_STATE_PATH:-$HOME/.mozbuild}/clang/lib
+# bindgen needs libclang. Default to mach bootstrap's clang; override with
+# $LIBCLANG_PATH (the canonical clang-sys var) e.g. for a distro/CI libclang.
+ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOME/.mozbuild}/clang/lib}
 
 # Build Gecko's modern in-tree FreeType (2.14.3) for the headless gfx font
 # backend instead of emscripten's ancient bundled port (-sUSE_FREETYPE = 2.6.0,

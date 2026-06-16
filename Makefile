@@ -16,7 +16,7 @@
 
 ROOT        := $(CURDIR)
 FIREFOX_URL := https://github.com/MercuryWorkshop/firefox.git
-FIREFOX_REF := 673a67963eda1202575e8ff4334157848856285d
+FIREFOX_REF := 96283a9fd70c0f85805a7ae1d0e9b447d0d5dffd
 
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
