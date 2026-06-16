@@ -5,7 +5,9 @@
 # into the module, not read from the FS. Trim/expand the set as runtime demands.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/../obj-full-emscripten/dist/bin"
+OBJ="$HERE/../obj-full-emscripten"
+[ "${GECKO_RELEASE:-}" = "1" ] && OBJ="${OBJ}-release"
+SRC="$OBJ/dist/bin"
 DST="$HERE/gre-stage"
 
 rm -rf "$DST"; mkdir -p "$DST"
@@ -17,6 +19,21 @@ rsync -aL \
   --exclude='firefox' --exclude='firefox-bin' --exclude='pingsender' \
   --exclude='nsinstall' --exclude='nsinstall_real' \
   "$SRC/" "$DST/"
+
+# Headless gfxFT2FontList reads text fonts from <process dir>/fonts (= /gre/fonts in
+# the web build). The headless toolkit installs none (browser/fonts ships only an
+# emoji font, and only for gtk/windows), so seed /gre/fonts with the LiberationSans
+# set already vendored in the pinned tree by pdf.js. Without a font here,
+# gfxFT2FontList::FindFonts hits MOZ_CRASH("No font files found") -> wasm
+# "RuntimeError: unreachable" at first layout.
+FONTSRC="$HERE/../firefox/toolkit/components/pdfjs/content/web/standard_fonts"
+mkdir -p "$DST/fonts"
+cp "$FONTSRC"/*.ttf "$DST/fonts/" 2>/dev/null || true
+if [ -z "$(ls -A "$DST/fonts" 2>/dev/null)" ]; then
+  echo "!! no .ttf at $FONTSRC -- the headless build would crash 'No font files found'" >&2
+  exit 1
+fi
+echo "staged $(ls "$DST/fonts" | wc -l) font(s) -> $DST/fonts"
 
 echo "staged GRE resources -> $DST"
 du -sh "$DST"

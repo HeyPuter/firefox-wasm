@@ -2,7 +2,8 @@
 #
 #   make firefox    shallow-clone (depth 1) the Gecko engine fork at the pinned commit
 #   make vendor     vendor the Rust std deps for -Z build-std (vendor-std-deps.py)
-#   make build      mach configure + build the engine -> obj-full-emscripten/dist/bin/libxul.so
+#   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (auto-configures)
+#   make configure  force a reconfigure (rarely needed; `build` does it automatically)
 #   make web        stage GRE + relink the embed-xul web build -> embed-xul/gecko.{js,wasm,data}
 #   make all        firefox -> vendor -> build -> web   (default)
 #   make run        serve the web build (server.cjs)
@@ -27,7 +28,7 @@ RELEASE             ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH
 export GECKO_RELEASE := $(RELEASE)
 
-.PHONY: all release firefox vendor build web run clean distclean
+.PHONY: all release firefox vendor configure build web run clean distclean
 
 all: web
 
@@ -52,7 +53,12 @@ vendor: firefox
 	python3 vendor-std-deps.py
 
 build: firefox vendor
-	cd firefox && ./mach configure && ./mach build
+	cd firefox && ./mach build
+
+# Force a reconfigure. Rarely needed: `mach build` (above) already auto-configures
+# a fresh objdir and re-runs configure whenever the mozconfig changes.
+configure: firefox vendor
+	cd firefox && ./mach configure
 
 web: build
 	bash embed-xul/stage-gre.sh
@@ -63,7 +69,7 @@ run:
 
 clean:
 	rm -f  embed-xul/gecko.js embed-xul/gecko.wasm embed-xul/gecko.data \
-	       embed-xul/gecko.worker.js embed-xul/libxul.stripped.so embed-xul/*.o \
+	       embed-xul/gecko.worker.js embed-xul/*.stripped.so embed-xul/*.o \
 	       embed-xul/gecko.wasm.zst embed-xul/gecko.data.zst embed-xul/gecko-assets.json
 	rm -rf embed-xul/gre-stage
 
