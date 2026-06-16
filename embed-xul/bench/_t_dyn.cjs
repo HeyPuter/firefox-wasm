@@ -1,0 +1,21 @@
+const {chromium}=require("/home/velzie/src/puter/node_modules/playwright");
+const {startBenchServer}=require("./bench-server.cjs");
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
+const L=(...a)=>console.log(...a);
+(async()=>{
+ const {server,port}=await startBenchServer(0);
+ const b=await chromium.launch({headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
+ const p=await b.newPage();
+ await p.goto("http://127.0.0.1:"+port+"/index.html?mirror=1",{waitUntil:"load",timeout:120000});
+ await p.waitForFunction(()=>window.__geckoReady===true,{timeout:150000});
+ await p.evaluate((u)=>window.geckoRender(u),"http://127.0.0.1:"+port+"/bench/dynamic.html");
+ const tick=()=>p.evaluate(()=>{const sd=(document.getElementById('mirror')||{}).srcdoc||'';
+   return {t:(sd.match(/tick (\d+)/)||[])[1]||'?', imgData:/src="data:image\/(png|svg)/.test(sd)||/src=["']data:/.test(sd), canvasImg:(sd.match(/data:image\/png/g)||[]).length};});
+ await sleep(3000); const a=await tick();
+ await sleep(2000); const b2=await tick();
+ L("sample A:", JSON.stringify(a));
+ L("sample B:", JSON.stringify(b2));
+ L("mirror advancing:", a.t!=='?' && b2.t!=='?' && (+b2.t) > (+a.t));
+ await p.screenshot({path:"/tmp/dyn_mirror.png"});
+ await b.close();server.close();process.exit(0);
+})().catch(e=>{console.error("fatal",e.message);process.exit(1);});

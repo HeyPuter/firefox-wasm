@@ -114,7 +114,10 @@ EMSETTINGS=(
   # it emulate explicit swap by blitting a back buffer. Deliberately NOT enabling
   # OFFSCREENCANVAS_SUPPORT, so the canvas stays on the main thread for proxying.
   -sMAX_WEBGL_VERSION=2
-  -sMIN_WEBGL_VERSION=2
+  # MIN=1 so emscripten's GL layer also supports WebGL1 (GLES2) content contexts: the
+  # compositor still uses WebGL2, but real WebGL1 content (e.g. shaders that #extension
+  # GL_EXT_frag_depth, a WebGL1-only extension) needs a genuine WebGL1 context.
+  -sMIN_WEBGL_VERSION=1
   -sFULL_ES3
   -sOFFSCREEN_FRAMEBUFFER=1
   -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1

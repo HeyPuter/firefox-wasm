@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset=utf-8><title>canvas mirror test</title></head>
+<body style="margin:0;background:#eee">
+<h2 id=h>canvas below</h2>
+<canvas id=c width=300 height=200 style="border:2px solid black"></canvas>
+<script>
+var x = document.getElementById('c').getContext('2d');
+x.fillStyle = '#3050ff'; x.fillRect(0,0,300,200);
+x.fillStyle = '#ff4040'; x.beginPath(); x.arc(150,100,70,0,7); x.fill();
+x.fillStyle = '#ffff00'; x.font = 'bold 28px sans-serif'; x.fillText('CANVAS-OK', 70, 110);
+document.getElementById('h').textContent = 'drawn';
+</script>
+</body></html>

@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset=utf-8><title>dynamic</title>
+<style>body{font-family:sans-serif;margin:20px} #t{font-size:32px;color:#08f}</style></head>
+<body>
+<h1>live page</h1>
+<div id=t>0</div>
+<canvas id=cv width=120 height=60></canvas>
+<img id=im width=64 height=64 alt=logo>
+<script>
+var n=0, t=document.getElementById('t'), cx=document.getElementById('cv').getContext('2d');
+// static-ish image via data URL (so it loads instantly, no network)
+document.getElementById('im').src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="green"/><text x="6" y="38" fill="white" font-size="18">IMG</text></svg>');
+setInterval(function(){ n++; t.textContent='tick '+n;
+  cx.fillStyle=n%2?'#f40':'#04f'; cx.fillRect(0,0,120,60);
+  cx.fillStyle='#fff'; cx.font='20px sans-serif'; cx.fillText('C'+n,10,38);
+}, 100);
+</script>
+</body></html>

@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset=utf-8><style>body{font-family:sans-serif;margin:16px}</style></head>
+<body>
+<h1>shadow + iframe test</h1>
+<my-widget></my-widget>
+<iframe id=f style="width:320px;height:110px;border:2px solid blue"
+  srcdoc="<body style='margin:0;background:#ffdddd'><h3 style='color:green;margin:8px'>IFRAME-CONTENT</h3><p style='margin:8px'>inside the frame</p></body>"></iframe>
+<script>
+class W extends HTMLElement{
+  constructor(){ super();
+    var r=this.attachShadow({mode:'open'});
+    r.innerHTML='<style>.b{background:purple;color:#fff;padding:12px;font-weight:bold;border-radius:8px}</style>'
+      +'<div class=b>SHADOW-CONTENT <span style="color:yellow">nested</span></div>';
+  }
+}
+customElements.define('my-widget', W);
+</script>
+</body></html>

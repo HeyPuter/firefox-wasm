@@ -67,6 +67,24 @@
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
+#include "imgITools.h"
+#include "imgIRequest.h"
+#include "imgIContainer.h"
+#include "nsIImageLoadingContent.h"
+#include "mozilla/dom/NodeList.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/ShadowRoot.h"
+#include "nsGkAtoms.h"
+#include "nsIPrincipal.h"
+#include "mozilla/StyleSheet.h"
+#include "mozilla/ServoCSSRuleList.h"
+#include "mozilla/css/Rule.h"
+#include "gfxUtils.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/Base64.h"
+#include "nsIURI.h"
+#include <unordered_map>
+#include <string>
 #include "nsGkAtoms.h"
 #include "nsNameSpaceManager.h"
 #include "nsGenericHTMLElement.h"
@@ -361,6 +379,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       // WebGL2 can't losslessly emulate glMapBufferRange, so WebRender's PBO GPU-cache
       // uploads corrupt; force direct texSubImage uploads (this made primitives render).
       mozilla::Preferences::SetBool("gfx.webrender.pbo-uploads", false);
+      // Nightly defaults to gleam's ErrorReactingGl (a synchronous glGetError after
+      // EVERY GL call). With the compositor context now LOCAL on the Renderer thread
+      // (OffscreenCanvas, no proxy), each glGetError is a real GPU sync that stalls the
+      // pipeline (~0.2 cores of glGetError on a GL-heavy page). Disable it (release
+      // behavior). [pref backs StaticPrefs::gfx_webrender_panic_on_gl_error]
+      mozilla::Preferences::SetBool("gfx.webrender.panic-on-gl-error", false);
       printf("xul_init: GECKO_GPU -> forced hardware WebRender prefs\n");
       fflush(stdout);
     }
@@ -571,9 +595,12 @@ NS_IMETHODIMP RenderLoadListener::OnStateChange(nsIWebProgress*, nsIRequest* aRe
     nsCOMPtr<nsILoadInfo> li = chan->LoadInfo();
     if (li) li->GetRequestBlockingReason(&blockReason);
   }
-  // Only report the terminal STOP for the top-level document, or any failure --
-  // useful for diagnosing real-URL (http over WISP) loads without per-state spam.
-  if ((aFlags & nsIWebProgressListener::STATE_STOP) || NS_FAILED(aStatus)) {
+  // Report failures always, but for successful STOPs only the overall network stop
+  // (STATE_IS_NETWORK fires once per page) -- NOT every sub-resource's STOP, which on a
+  // real page is hundreds of printf+flushes (measured ~10% of load CPU went to logging).
+  const bool overallStop = (aFlags & nsIWebProgressListener::STATE_STOP) &&
+                           (aFlags & nsIWebProgressListener::STATE_IS_NETWORK);
+  if (overallStop || NS_FAILED(aStatus)) {
     printf("xul_render: load %s status=0x%08x blockReason=%u req=%.60s\n",
            NS_FAILED(aStatus) ? "FAILED" : "stop", (unsigned)aStatus, blockReason,
            name.get());
@@ -601,6 +628,12 @@ static nsCOMPtr<nsIWindowlessBrowser> g_wb;
 static nsCOMPtr<nsIAppWindow> g_appWin;   // chrome build: the real top-level window
 static nsCOMPtr<nsIDocShell> g_docShell;
 static bool g_isChrome = false;
+static bool g_gpu = false;
+// DOM-mirror mode (GECKO_MIRROR=1): run headless (never paint); the host pulls the
+// serialized, self-contained DOM via op=5 and renders it in a native iframe. <canvas>
+// still goes through the normal (GPU/software) paint path.
+static bool g_mirror = false;
+static void mirror_clear_caches();  // defined with the op=6/7 collectors below
 
 // chrome:// URL of the full Firefox front-end window.
 static const char* kBrowserChromeURL = "chrome://browser/content/browser.xhtml";
@@ -727,7 +760,13 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
 // spin until the target document finishes loading.
 // Evaluate a script in the chrome window's global (system principal). Used to
 // drive the Firefox front-end (gBrowser etc.) the way the UI does.
-static bool RunChromeScript(const nsACString& aScript) {
+// Evaluate aScript in the content window's global. If aOutResult is non-null, the
+// script's return value is coerced to a UTF-8 string and returned via *aOutResult
+// (malloc'd; caller owns) -- used by the DOM-mirror mode to pull the serialized DOM
+// back to the host.
+static bool RunChromeScript(const nsACString& aScript,
+                            char** aOutResult = nullptr) {
+  if (aOutResult) *aOutResult = nullptr;
   nsCOMPtr<mozIDOMWindowProxy> winProxy = do_GetInterface(g_docShell);
   nsPIDOMWindowOuter* outer =
       winProxy ? nsPIDOMWindowOuter::From(winProxy) : nullptr;
@@ -756,6 +795,15 @@ static bool RunChromeScript(const nsACString& aScript) {
     fflush(stdout);
     JS_ClearPendingException(cx);
     return false;
+  }
+  if (aOutResult && !rval.isNullOrUndefined()) {
+    JS::Rooted<JSString*> str(cx, JS::ToString(cx, rval));
+    if (str) {
+      JS::UniqueChars utf8 = JS_EncodeStringToUTF8(cx, str);
+      if (utf8) *aOutResult = strdup(utf8.get());
+    } else {
+      JS_ClearPendingException(cx);
+    }
   }
   return true;
 }
@@ -845,13 +893,20 @@ static bool xul_load(const char* url, int width, int height) {
     fflush(stdout);
   }
 
+  // Return once the new document is INTERACTIVE (DOM parsed, deferred scripts run)
+  // instead of COMPLETE. A heavy SPA with long-lived connections / never-ending
+  // subresource loads never reaches COMPLETE, so waiting for it spins to the 500k cap
+  // (minutes) and blocks the engine. INTERACTIVE means the DOM + frame tree exist, which
+  // is all both render paths need: the mirror loop keeps re-serializing and the paint
+  // loop (op=4, ~25fps) keeps repainting as the page hydrates/mutates afterward -- i.e.
+  // progressive load, like a real browser, instead of a multi-minute stall.
   uint32_t spins = 0;
   SpinEventLoopUntil("xul_load"_ns, [&]() -> bool {
     PresShell* p = ds->GetPresShell();
     Document* d = p ? p->GetDocument() : nullptr;
     int st = d ? (int)d->GetReadyStateEnum() : -1;
     bool isNew = d && d != oldDoc;
-    return (isNew && st == (int)Document::READYSTATE_COMPLETE) ||
+    return (isNew && st >= (int)Document::READYSTATE_INTERACTIVE) ||
            (++spins > 500000);
   });
   printf("xul_load: spun %u, ready\n", spins);
@@ -915,6 +970,23 @@ static bool xul_load(const char* url, int width, int height) {
           "if(!s.sheetRegistered(u,s.AGENT_SHEET))s.loadAndRegisterSheet(u,s.AGENT_SHEET);}"
           "catch(e){console.error('round css: '+e);}"_ns);
       printf("xul_load: registered desktop JSWindowActors + rounded-popup sheet\n");
+      fflush(stdout);
+    }
+  }
+
+  // DOM-mirror mode is headless: we never composite, we pull the laid-out DOM via
+  // op=5. But the refresh driver still ticks (animations/timers/JS), and any content
+  // invalidation (e.g. a click handler mutating the DOM) makes nsRefreshDriver::Tick
+  // reach PaintIfNeeded -> PresShell::PaintSynchronously -> PuppetWidget::
+  // GetWindowRenderer -> CreateCompositor -> WebRenderBridgeChild::SendEnsureConnected,
+  // a SYNC IPC that never returns here (no compositor session is running in this mode),
+  // hanging the engine thread forever. SetNeverPainting makes PaintSynchronously a
+  // no-op so the tick advances content without trying to composite.
+  if (g_mirror) {
+    mirror_clear_caches();  // new document -> drop the previous page's cached resources
+    if (PresShell* ps = ds->GetPresShell()) {
+      ps->SetNeverPainting(true);
+      printf("xul_load: mirror mode -> SetNeverPainting(true)\n");
       fflush(stdout);
     }
   }
@@ -1031,7 +1103,7 @@ static uint8_t* xul_paint(int width, int height) {
 // the frame tree dirty, and pump the event loop so the refresh driver ticks and
 // WebRender composites + presents. Presentation is async (next refresh tick).
 static void PumpEvents();  // defined below
-static bool g_gpu = false;
+static char* g_evalResult = nullptr;  // op=5 eval result (UTF-8); -> g_cmd->result
 static void gpu_present(int width, int height) {
   using namespace mozilla;
   using mozilla::dom::Document;
@@ -1117,6 +1189,287 @@ static uint8_t* paint_popup_overlay(int width, int height) {
   int n = composite_visible_popups(ctx.get(), ps, width, height,
                                    AppUnitsPerCSSPixel());
   return n > 0 ? s_buf : nullptr;
+}
+
+// Per-page caches of encoded resource data URLs, cleared on navigation (xul_load).
+// Steady-state mirroring is gated by a content-side dirty flag, but when the DOM DOES
+// change (SPAs, dynamic pages) a dirty tick would otherwise re-encode every image and
+// stylesheet from scratch even though they're unchanged. Keying by image URL / stylesheet
+// pointer makes a dirty tick re-encode only genuinely-new resources.
+static std::unordered_map<std::string, std::string> g_mirrorImgCache;
+static std::unordered_map<std::string, std::string> g_mirrorCssCache;
+static void mirror_clear_caches() {
+  g_mirrorImgCache.clear();
+  g_mirrorCssCache.clear();
+}
+
+// Composed-tree walk for DOM-mirror resource collection. Visits elements in the EXACT
+// order the JS serializer (mirrorSerializerFn) does, so the #MIRRORIMG{n}#/#MIRRORCANVAS{n}#
+// token indices line up: at each element, descend the open shadow root FIRST (matching the
+// <template shadowrootmode> emitted before light children), then a same-origin iframe's
+// content document (matching the recursive srcdoc), then the light children. <script>/
+// <noscript>/<style>/<link>/<template> subtrees are skipped (the serializer drops or
+// raw-emits them, never indexing inside). Only OPEN, non-UA shadow roots
+// (GetShadowRootForBindings) and same-origin iframes (GetContentDocument under the node's
+// own principal) are entered -- exactly what the content-JS serializer can reach.
+static void mirror_walk(nsINode* node,
+                        nsTArray<RefPtr<mozilla::dom::Element>>& imgs,
+                        nsTArray<RefPtr<mozilla::dom::Element>>& canvases) {
+  using namespace mozilla::dom;
+  for (nsIContent* c = node->GetFirstChild(); c; c = c->GetNextSibling()) {
+    if (!c->IsElement()) continue;
+    Element* el = c->AsElement();
+    if (el->IsHTMLElement()) {
+      nsAtom* tag = el->NodeInfo()->NameAtom();
+      if (tag == nsGkAtoms::script || tag == nsGkAtoms::noscript ||
+          tag == nsGkAtoms::style || tag == nsGkAtoms::link ||
+          tag == nsGkAtoms::_template) {
+        continue;
+      }
+      if (tag == nsGkAtoms::img) {
+        imgs.AppendElement(el);
+        continue;
+      }
+      if (tag == nsGkAtoms::canvas) {
+        canvases.AppendElement(el);
+        continue;
+      }
+      if (tag == nsGkAtoms::iframe) {
+        // Same-origin only, matching the serializer's JS iframe.contentDocument access.
+        if (Document* cd = el->OwnerDoc()->GetSubDocumentFor(el)) {
+          bool same = false;
+          el->NodePrincipal()->Equals(cd->NodePrincipal(), &same);
+          if (same) {
+            if (Element* de = cd->GetDocumentElement()) {
+              mirror_walk(de, imgs, canvases);
+            }
+          }
+        }
+        continue;
+      }
+    }
+    if (ShadowRoot* sr = el->GetShadowRootForBindings()) {
+      mirror_walk(sr, imgs, canvases);
+    }
+    mirror_walk(el, imgs, canvases);
+  }
+}
+
+// DOM-mirror image inlining (op=6). Gecko already downloaded + decoded the page's
+// images using the PAGE's own privileges, so we can read their bytes here and hand the
+// host data: URLs -- sidestepping the cross-origin canvas-taint / CORS wall that blocks
+// the content-JS serializer (a content script can't toDataURL() a cross-origin image).
+// Returns a JSON array of data: URLs (empty string for images not yet decoded), one per
+// <img> in document order, so the JS side swaps them in by index. Caller owns the
+// strdup'd result.
+static char* mirror_collect_images() {
+  using namespace mozilla;
+  using mozilla::dom::Document;
+  if (!g_docShell) return strdup("[]");
+  PresShell* ps = g_docShell->GetPresShell();
+  if (!ps) return strdup("[]");
+  Document* doc = ps->GetDocument();
+  if (!doc) return strdup("[]");
+
+  nsCOMPtr<imgITools> imgTools = do_GetService("@mozilla.org/image/tools;1");
+  if (!imgTools) return strdup("[]");
+
+  // Composed-tree order (shadow + same-origin iframes), matching the serializer's tokens.
+  nsTArray<RefPtr<mozilla::dom::Element>> imgEls, cvEls;
+  if (mozilla::dom::Element* root = doc->GetDocumentElement()) {
+    mirror_walk(root, imgEls, cvEls);
+  }
+  uint32_t count = imgEls.Length();
+
+  nsCString json;
+  json.Append('[');
+  for (uint32_t i = 0; i < count; i++) {
+    if (i) json.Append(',');
+    nsCString dataUrl;
+    nsCOMPtr<nsIImageLoadingContent> ilc = do_QueryInterface(imgEls[i]);
+    if (ilc) {
+      nsCOMPtr<imgIRequest> req;
+      ilc->GetRequest(nsIImageLoadingContent::CURRENT_REQUEST,
+                      getter_AddRefs(req));
+      if (req) {
+        // Cache by the image's URL: identical URLs share one encode, and an unchanged
+        // image is never re-encoded on a later dirty tick.
+        std::string key;
+        if (nsCOMPtr<nsIURI> uri = req->GetURI()) {
+          nsAutoCString spec;
+          uri->GetSpec(spec);
+          key.assign(spec.get(), spec.Length());
+          auto it = g_mirrorImgCache.find(key);
+          if (it != g_mirrorImgCache.end()) {
+            json.Append('"');
+            json.Append(it->second.c_str());
+            json.Append('"');
+            continue;
+          }
+        }
+        nsCOMPtr<imgIContainer> container;
+        req->GetImage(getter_AddRefs(container));
+        if (container) {
+          nsCOMPtr<nsIInputStream> stream;
+          imgTools->EncodeImage(container, "image/png"_ns, u""_ns,
+                                getter_AddRefs(stream));
+          // Vector (SVG) images decode to a VectorImage with no fixed frame, so
+          // EncodeImage yields nothing. Re-encode at the intrinsic size, which forces
+          // a raster of the SVG.
+          uint64_t avail64 = 0;
+          if (stream) stream->Available(&avail64);
+          if (avail64 == 0) {
+            int32_t iw = 0, ih = 0;
+            container->GetWidth(&iw);
+            container->GetHeight(&ih);
+            if (iw > 0 && ih > 0) {
+              if (iw > 1024) iw = 1024;
+              if (ih > 1024) ih = 1024;
+              stream = nullptr;
+              imgTools->EncodeScaledImage(container, "image/png"_ns, iw, ih,
+                                          u""_ns, getter_AddRefs(stream));
+              avail64 = 0;
+              if (stream) stream->Available(&avail64);
+            }
+          }
+          if (stream && avail64) {
+            uint32_t avail =
+                avail64 > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)avail64;
+            nsAutoCString b64;
+            if (NS_SUCCEEDED(Base64EncodeInputStream(stream, b64, avail))) {
+              dataUrl.AssignLiteral("data:image/png;base64,");
+              dataUrl.Append(b64);
+            }
+          }
+        }
+        // Cache only a successful encode, keyed by URL. An image still decoding yields
+        // empty -> not cached -> retried next dirty tick until it lands.
+        if (!key.empty() && !dataUrl.IsEmpty()) {
+          g_mirrorImgCache[key].assign(dataUrl.get(), dataUrl.Length());
+        }
+      }
+    }
+    // base64 + the literal prefix contain no JSON-special chars, so a bare quote
+    // wrap is safe (no escaping needed).
+    json.Append('"');
+    json.Append(dataUrl);
+    json.Append('"');
+  }
+  json.Append(']');
+  return strdup(json.get());
+}
+
+// DOM-mirror CSS inlining (op=7). The content-JS serializer can only read same-origin
+// document.styleSheets[i].cssRules (cross-origin throws SecurityError). Here we use the
+// privileged StyleSheet::GetCssRulesInternal() (no security check) to serialize EVERY
+// stylesheet -- same- and cross-origin -- to text, and hand back data:text/css URLs in
+// document (cascade) order so the JS side can <link> them in. Caller owns the result.
+static char* mirror_collect_css() {
+  using namespace mozilla;
+  using mozilla::dom::Document;
+  if (!g_docShell) return strdup("[]");
+  PresShell* ps = g_docShell->GetPresShell();
+  if (!ps) return strdup("[]");
+  Document* doc = ps->GetDocument();
+  if (!doc) return strdup("[]");
+
+  size_t count = doc->SheetCount();
+  nsCString json;
+  json.Append('[');
+  for (size_t i = 0; i < count; i++) {
+    if (i) json.Append(',');
+    nsCString dataUrl;
+    StyleSheet* sheet = doc->SheetAt(i);
+    if (sheet && !sheet->Disabled()) {
+      // Cache by sheet identity (stable for the page's life; the map is cleared on
+      // navigation). Stylesheets almost never change after load, so this turns repeated
+      // dirty ticks' CSS cost into a map lookup.
+      std::string key = std::to_string((uintptr_t)sheet);
+      auto it = g_mirrorCssCache.find(key);
+      if (it != g_mirrorCssCache.end()) {
+        json.Append('"');
+        json.Append(it->second.c_str());
+        json.Append('"');
+        continue;
+      }
+      if (ServoCSSRuleList* rules = sheet->GetCssRulesInternal()) {
+        nsCString css;
+        uint32_t n = rules->Length();
+        for (uint32_t k = 0; k < n; k++) {
+          if (css::Rule* rule = rules->GetRule(k)) {
+            nsAutoCString t;
+            rule->GetCssText(t);
+            css.Append(t);
+            css.Append('\n');
+          }
+        }
+        if (!css.IsEmpty()) {
+          nsAutoCString b64;
+          if (NS_SUCCEEDED(Base64Encode(css.get(), css.Length(), b64))) {
+            dataUrl.AssignLiteral("data:text/css;charset=utf-8;base64,");
+            dataUrl.Append(b64);
+          }
+        }
+      }
+      if (!dataUrl.IsEmpty()) {
+        g_mirrorCssCache[key].assign(dataUrl.get(), dataUrl.Length());
+      }
+    }
+    json.Append('"');
+    json.Append(dataUrl);
+    json.Append('"');
+  }
+  json.Append(']');
+  return strdup(json.get());
+}
+
+// DOM-mirror canvas inlining (op=8). A <canvas> can't be serialized as markup -- its
+// pixels live in a backing surface. Snapshot each one (privileged readback, so WebGL and
+// cross-origin-tainted canvases are fine) and hand back data:image/png URLs in document
+// order; the JS side swaps each <canvas> for an <img> with these pixels.
+static char* mirror_collect_canvases() {
+  using namespace mozilla;
+  using mozilla::dom::Document;
+  using mozilla::dom::HTMLCanvasElement;
+  if (!g_docShell) return strdup("[]");
+  PresShell* ps = g_docShell->GetPresShell();
+  if (!ps) return strdup("[]");
+  Document* doc = ps->GetDocument();
+  if (!doc) return strdup("[]");
+
+  // Composed-tree order (shadow + same-origin iframes), matching the serializer's tokens.
+  nsTArray<RefPtr<mozilla::dom::Element>> imgEls, cvEls;
+  if (mozilla::dom::Element* root = doc->GetDocumentElement()) {
+    mirror_walk(root, imgEls, cvEls);
+  }
+  uint32_t count = cvEls.Length();
+  nsCString json;
+  json.Append('[');
+  for (uint32_t i = 0; i < count; i++) {
+    if (i) json.Append(',');
+    nsCString dataUrl;
+    HTMLCanvasElement* canvas = HTMLCanvasElement::FromNodeOrNull(cvEls[i]);
+    if (canvas) {
+      RefPtr<gfx::SourceSurface> surf = canvas->GetSurfaceSnapshot();
+      if (surf) {
+        Maybe<nsTArray<uint8_t>> bytes = gfxUtils::EncodeSourceSurfaceAsBytes(
+            surf, ImageType::PNG, u""_ns);
+        if (bytes && !bytes->IsEmpty()) {
+          nsAutoCString b64;
+          if (NS_SUCCEEDED(Base64Encode((const char*)bytes->Elements(),
+                                        bytes->Length(), b64))) {
+            dataUrl.AssignLiteral("data:image/png;base64,");
+            dataUrl.Append(b64);
+          }
+        }
+      }
+    }
+    json.Append('"');
+    json.Append(dataUrl);
+    json.Append('"');
+  }
+  json.Append(']');
+  return strdup(json.get());
 }
 
 // Shared command block. JS writes the request fields + sets state=1; the Gecko
@@ -1370,6 +1723,7 @@ int main() {
   // GPU mode: the in-process WebRender compositor presents directly to the page
   // <canvas> (GLContextProviderEmscripten over WebGL2). Set by index.html?gpu=1.
   g_gpu = getenv("GECKO_GPU") != nullptr;
+  g_mirror = getenv("GECKO_MIRROR") != nullptr;
   // Capture the canvas-passthrough flag HERE (main/app thread, where getenv sees
   // the env) into a shared global; content WebGL's GLContextProvider runs on a
   // different worker thread where getenv may not see ENV. See g_gl_passthrough.
@@ -1431,8 +1785,23 @@ int main() {
           break;
         case 4:  // paint only
           break;
-        case 5:  // eval JS in the chrome global (test/automation hook)
-          ok = RunChromeScript(nsDependentCString(g_cmd->url));
+        case 5: {  // eval JS in the content global; returns the eval's string result
+          char* res = nullptr;
+          ok = RunChromeScript(nsDependentCString(g_cmd->url), &res);
+          g_evalResult = res;  // ownership -> g_cmd->result below (freed next cmd)
+          PumpEvents();
+          break;
+        }
+        case 6:  // DOM-mirror: data: URLs for the page's <img>s (privileged, CORS-free)
+          g_evalResult = mirror_collect_images();
+          PumpEvents();
+          break;
+        case 7:  // DOM-mirror: data:text/css URLs for every stylesheet (cross-origin too)
+          g_evalResult = mirror_collect_css();
+          PumpEvents();
+          break;
+        case 8:  // DOM-mirror: data: URLs for the page's <canvas> pixels
+          g_evalResult = mirror_collect_canvases();
           PumpEvents();
           break;
       }
@@ -1440,17 +1809,36 @@ int main() {
       // then paint any open popups into an overlay buffer (result/resultLen,
       // otherwise unused in GPU mode) for the JS 2D overlay canvas. Software mode:
       // paint everything into one BGRA buffer for the JS putImageData blit.
-      if (g_gpu) {
-        if (ok) {
-          gpu_present(g_cmd->width, g_cmd->height);
-          buf = paint_popup_overlay(g_cmd->width, g_cmd->height);  // null = no popups
+      if (g_cmd->op >= 5 && g_cmd->op <= 8) {
+        // String results: op5 eval/serialize, op6 image / op7 css / op8 canvas
+        // data-URL JSON.
+        buf = (uint8_t*)g_evalResult;
+        g_evalResult = nullptr;
+        g_cmd->result = buf;
+        g_cmd->resultLen = buf ? (uint32_t)strlen((char*)buf) : 0;
+        g_cmd->state = ok ? 3 : -1;
+      } else if (g_mirror) {
+        // Headless: Gecko parsed/styled/laid-out + ran JS above (and PumpEvents kept it
+        // ticking); we never paint. The host pulls the DOM via op=5.
+        g_cmd->result = nullptr;
+        g_cmd->resultLen = 0;
+        g_cmd->state = ok ? 3 : -1;
+      } else {
+        // GPU mode: present the main scene via the compositor (no software buffer),
+        // then paint any open popups into an overlay buffer. Software mode: paint
+        // everything into one BGRA buffer for the JS putImageData blit.
+        if (g_gpu) {
+          if (ok) {
+            gpu_present(g_cmd->width, g_cmd->height);
+            buf = paint_popup_overlay(g_cmd->width, g_cmd->height);  // null = no popups
+          }
+        } else if (ok) {
+          buf = xul_paint(g_cmd->width, g_cmd->height);
         }
-      } else if (ok) {
-        buf = xul_paint(g_cmd->width, g_cmd->height);
+        g_cmd->result = buf;
+        g_cmd->resultLen = buf ? g_cmd->width * g_cmd->height * 4 : 0;
+        g_cmd->state = (g_gpu ? ok : (buf != nullptr)) ? 3 : -1;  // done / error
       }
-      g_cmd->result = buf;
-      g_cmd->resultLen = buf ? g_cmd->width * g_cmd->height * 4 : 0;
-      g_cmd->state = (g_gpu ? ok : (buf != nullptr)) ? 3 : -1;  // done / error
     } else {
       // Idle: keep pumping the Gecko main-thread event loop so content timers,
       // JS/CSS animations and the refresh driver advance continuously -- not just

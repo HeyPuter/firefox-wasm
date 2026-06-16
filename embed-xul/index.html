@@ -97,8 +97,13 @@
     // ?glpass=1 -> route content canvas.getContext('webgl'/'webgl2') to a real
     // host WebGL context (passthrough) read back into the compositor.
     const glPassMode = new URLSearchParams(location.search).has('glpass');
-    const ctx = gpuMode ? null : canvas.getContext('2d');
+    // ?mirror=1 -> DOM-mirror mode: Gecko runs headless (no paint); we pull the
+    // serialized, self-contained DOM and render it in a native <iframe>. #screen stays
+    // as a transparent input-capture overlay so mouse/keyboard still reach Gecko.
+    const mirrorMode = new URLSearchParams(location.search).has('mirror');
+    const ctx = (gpuMode || mirrorMode) ? null : canvas.getContext('2d');
     const enc = new TextEncoder();
+    const dec = new TextDecoder();
 
     // The engine prints a lot to stdout/stderr; tee'ing each line into a growing <pre>
     // via `textContent +=` is O(n^2) and forces a layout per line (`scrollHeight`),
@@ -206,6 +211,13 @@
         await new Promise((r) => setTimeout(r, item.op === OP_LOAD ? 20 : 4));
       }
       if (st !== 3) { log('[harness] cmd failed/timeout state=' + st); return null; }
+      if (item.op >= 5 && item.op <= 8) {
+        // String results: op5 eval/serialize, op6 img / op7 css / op8 canvas data-URL
+        // JSON. RES/LEN hold a UTF-8 string.
+        const resPtr = i32()[(cmd + RES) >> 2], len = i32()[(cmd + LEN) >> 2];
+        // Copy out of the shared wasm heap: TextDecoder rejects SharedArrayBuffer views.
+        return (resPtr && len) ? dec.decode(new Uint8Array(u8().subarray(resPtr, resPtr + len))) : '';
+      }
       const n = blit();
       // Mirror the content's cursor (cursor: pointer over links, text over inputs,
       // resize handles, etc.) onto the canvas so the host pointer matches.
@@ -269,6 +281,156 @@
       requestAnimationFrame(tick);
     }
 
+    // --- DOM-mirror mode -------------------------------------------------
+    // Runs IN the content window (via op=5). Serializes the live DOM into a single
+    // self-contained HTML string: inline same-origin stylesheets as <style>, drop
+    // <script>/<link rel=stylesheet> (the host iframe must not run JS or fetch). Image
+    // / cross-origin-CSS inlining (data: URLs) is layered on in later steps.
+    function mirrorSerializerFn() {
+      try {
+        // Skip work when nothing changed. A persistent MutationObserver (installed once,
+        // lives on the content window across op=5 calls) flips __mirrorDirty on any DOM
+        // change; if it's clean -- and there's no <canvas> needing a fresh pixel snapshot
+        // -- return '' so the host reuses the current mirror instead of re-serializing +
+        // re-encoding every resource. CSS animations replay natively in the iframe, so a
+        // static-DOM page genuinely needs no re-mirror.
+        if (!window.__mirrorObs) {
+          window.__mirrorDirty = true;
+          window.__mirrorObs = new MutationObserver(function () { window.__mirrorDirty = true; });
+          window.__mirrorObs.observe(document.documentElement,
+            { subtree: true, childList: true, attributes: true, characterData: true });
+        }
+        if (!window.__mirrorDirty && !document.querySelector('canvas')) return '';
+        window.__mirrorDirty = false;
+
+        // Recursive serializer (cloneNode+outerHTML can't reach shadow roots or iframe
+        // documents). `top` is true only for the MAIN document's light DOM -- the tree the
+        // C++ resource ops walk via querySelectorAll. There we tokenize <img>/<canvas>
+        // (op6/op8 swap in data: URLs by index = document order) and strip <style>/<link>
+        // (op7 re-supplies every main-doc sheet as data:text/css at the #MIRRORCSS# marker).
+        // Inside shadow roots / iframe documents (top=false) those ops don't reach, so we
+        // KEEP inline <style> (scoped styling) and emit <img> with their own src as best
+        // effort; <script> and <link rel=stylesheet> are always dropped.
+        var VOID = {area:1,base:1,br:1,col:1,embed:1,hr:1,img:1,input:1,link:1,meta:1,param:1,source:1,track:1,wbr:1};
+        var RAW = {style:1,script:1,xmp:1,noframes:1};
+        var imgIdx = 0, cvIdx = 0;
+        var out = [];
+        function eA(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+        function eT(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+        function attrs(el, skip){
+          var a = el.attributes;
+          for (var i=0;i<a.length;i++){ var n=a[i].name; if (skip && skip[n]) continue; out.push(' '+n+'="'+eA(a[i].value)+'"'); }
+        }
+        function children(node, top){ for (var c=node.firstChild;c;c=c.nextSibling) ser(c, top); }
+        // Constructable/adopted stylesheets aren't in markup and aren't in op7's
+        // document.styleSheets, but web components lean on them heavily. They're always
+        // same-origin (page-created), so cssRules is readable here -> inline as <style>.
+        function adopted(root){
+          try {
+            var ss = root && root.adoptedStyleSheets; if (!ss || !ss.length) return '';
+            var c = '';
+            for (var i=0;i<ss.length;i++){ try { var rs=ss[i].cssRules; for (var j=0;j<rs.length;j++) c+=rs[j].cssText+'\n'; } catch(e){} }
+            return c ? '<style>'+c+'</style>' : '';
+          } catch(e){ return ''; }
+        }
+        function ser(node, top){
+          var nt = node.nodeType;
+          if (nt === 3) { out.push(eT(node.data)); return; }          // text
+          if (nt === 8) { out.push('<!--'+String(node.data).replace(/--/g,'- -')+'-->'); return; }
+          if (nt !== 1) return;                                        // skip CDATA/PI/etc
+          var tag = node.localName;
+          if (tag === 'script' || tag === 'noscript') return;          // never run/show scripts
+          if (top && (tag === 'style' ||
+              (tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(node.getAttribute('rel')||'')))) return;
+          if (!top && tag === 'link' &&
+              /(^|\s)stylesheet(\s|$)/i.test(node.getAttribute('rel')||'')) return;  // can't fetch in sandbox
+          if (tag === 'img') {
+            // Tokenize everywhere (light DOM, shadow roots, same-origin iframes); the C++
+            // op6 composed-tree walk produces data: URLs in this exact index order.
+            out.push('<img'); attrs(node, {src:1,srcset:1,sizes:1,loading:1});
+            out.push(' src="#MIRRORIMG'+(imgIdx++)+'#">'); return;
+          }
+          if (tag === 'canvas') {
+            out.push('<img'); attrs(node, {});  // keep style/class/id/width/height
+            out.push(' src="#MIRRORCANVAS'+(cvIdx++)+'#">'); return;
+          }
+          if (tag === 'iframe') {
+            out.push('<iframe'); attrs(node, {src:1,srcdoc:1});
+            var doc = null;
+            try { doc = node.contentDocument; } catch (e) {}            // null/throws if cross-origin
+            if (doc && doc.documentElement) {
+              var save = out; out = [];
+              ser(doc.documentElement, false);                          // nested doc: not the C++-walked tree
+              var inner = out.join(''); out = save;
+              out.push(' srcdoc="'+eA('<!doctype html>'+inner)+'"');
+            }                                                           // cross-origin: emit no src -> blank box
+            out.push('></iframe>'); return;
+          }
+          out.push('<'+tag); attrs(node);
+          out.push('>');
+          if (VOID[tag]) return;
+          if (RAW[tag]) { out.push(node.textContent == null ? '' : node.textContent); out.push('</'+tag+'>'); return; }
+          // Declarative shadow DOM: reconstructed by the host's parser (srcdoc supports it).
+          var sr = node.shadowRoot;
+          if (sr) { out.push('<template shadowrootmode="open">'); children(sr, false); out.push(adopted(sr)); out.push('</template>'); }
+          children(node, top);
+          if (tag === 'head') { out.push(adopted(node.ownerDocument)); if (top) out.push('<!--MIRRORCSS-->'); }
+          out.push('</'+tag+'>');
+        }
+        ser(document.documentElement, true);
+        return '<!doctype html>' + out.join('');
+      } catch (e) { return '<!doctype html><body>mirror error: ' + (e && e.message) + '</body>'; }
+    }
+    const MIRROR_SERIALIZE = '(' + mirrorSerializerFn.toString() + ')()';
+
+    function startMirrorLoop() {
+      // Build the iframe that natively renders the mirrored DOM. #screen stays on top
+      // as a transparent input-capture layer (its handlers forward to Gecko as usual).
+      const frame = document.createElement('iframe');
+      frame.id = 'mirror';
+      frame.setAttribute('sandbox', '');  // render static HTML/CSS/images; no scripts/nav
+      frame.style.cssText = 'position:absolute;left:0;top:0;border:none;background:#fff;' +
+        'width:' + canvas.width + 'px;height:' + canvas.height + 'px';
+      const wrap = document.getElementById('screenwrap') || canvas.parentNode;
+      wrap.insertBefore(frame, canvas);            // iframe behind
+      canvas.style.background = 'transparent';     // let the iframe show through
+      canvas.style.position = 'relative';
+      canvas.style.zIndex = '1';                   // #screen on top (captures input)
+      let busy = false;
+      // JS-side resource caches. Images + stylesheets change rarely, so re-pulling them
+      // (op6/op7 -- hundreds of KB of data: URLs) on EVERY dirty tick is wasteful IPC.
+      // Refresh them at most every RES_REFRESH ms; the per-tick path only re-serializes
+      // the DOM (op5, the thing that actually changes) and re-snapshots <canvas> (op8).
+      let cImgs = [], cCss = [], cResAt = -1e9;
+      const RES_REFRESH = 2000;
+      const tick = async () => {
+        if (mod && cmd && !running && queue.length === 0 && !busy) {
+          busy = true;
+          try {
+            let html = await enqueue({ op: 5, url: MIRROR_SERIALIZE });
+            if (html && html.length) {
+              // Pull privileged, CORS-free resources from the engine: op6 = <img> data
+              // URLs (image cache), op7 = every stylesheet as data:text/css (cross-origin
+              // too), op8 = <canvas> pixel snapshots.
+              const J = async (op) => { try { return JSON.parse((await enqueue({ op })) || '[]'); } catch (e) { return []; } };
+              const now = performance.now();
+              if (now - cResAt >= RES_REFRESH) { cImgs = await J(6); cCss = await J(7); cResAt = now; }
+              const cvs = await J(8);  // canvas pixels are live -> always fresh
+              html = html.replace(/#MIRRORIMG(\d+)#/g, (_, n) => cImgs[+n] || '');
+              html = html.replace(/#MIRRORCANVAS(\d+)#/g, (_, n) => cvs[+n] || '');
+              const links = cCss.filter(Boolean)
+                .map((u) => '<link rel="stylesheet" href="' + u + '">').join('');
+              html = html.replace('<!--MIRRORCSS-->', links);
+              frame.srcdoc = html;
+            }
+          } catch (e) { log('[mirror] ' + e); }
+          busy = false;
+        }
+        setTimeout(tick, 200);  // ~5fps re-mirror (incremental diffing is a later step)
+      };
+      tick();
+    }
+
     async function renderUrl(url) {
       setStatus('rendering ' + url.slice(0, 48) + '…', true);
       const n = await enqueue({ op: OP_LOAD, url });
@@ -277,6 +439,7 @@
     }
     window.geckoRender = renderUrl;  // Playwright test hook
     window.geckoEval = (script) => enqueue({ op: 5, url: script });  // chrome-eval hook (bench/automation)
+    window.geckoMirrorScript = MIRROR_SERIALIZE;  // test hook: measure serialize cost
 
     // --- input forwarding -------------------------------------------------
     // Map a DOM mouse/wheel event to canvas pixel coords (canvas backing is
@@ -453,6 +616,7 @@
           // <canvas>). Gated so the default software path is unchanged.
           if (gpuMode) m.ENV['GECKO_GPU'] = '1';
           if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
+          if (mirrorMode) m.ENV['GECKO_MIRROR'] = '1';
           const mozlog = new URLSearchParams(location.search).get('mozlog');
           if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
           // Bench/automation knobs: ?stylo=N -> GECKO_STYLO_THREADS, and any
@@ -479,7 +643,7 @@
         progEl.style.display = 'none';
         goEl.disabled = false;
         window.__geckoReady = true;
-        startPaintLoop();
+        if (mirrorMode) startMirrorLoop(); else startPaintLoop();
       }).catch((e) => {
         log('[harness] instantiation failed:', e && e.message ? e.message : e);
         if (e && e.stack) log(e.stack);

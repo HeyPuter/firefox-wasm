@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+function f(a,b){ return a*b + a - b; }
+function g(a){ var x; return x + a; }
+function sum(n){ var s=0; for (var i=0;i<n;i++) s+=i; return s; }
+function poly(n){ var s=0,i=0; while(i<n){ s = s + i*i - i; i++; } return s; }
+function hash(n){ var h=0; for(var i=0;i<n;i++){ h=(h*31+i)|0; h=h^(h>>13); h=(h+(h<<7))|0; } return h|0; }
+
+var ok=true, bad="";
+function chk(c,m){ if(!c&&ok){ok=false;bad=m;} }
+function polyRef(n){var s=0;for(var i=0;i<n;i++)s+=i*i-i;return s;}
+function hashRef(n){var h=0;for(var i=0;i<n;i++){h=(h*31+i)|0;h=h^(h>>13);h=(h+(h<<7))|0;}return h|0;}
+
+for (var i=0;i<60;i++){ f(3,4); sum(50); poly(40); hash(50); }
+chk(f(3,4)===11,"f");
+chk(sum(1000)===499500,"sum="+sum(1000));
+chk(poly(200)===polyRef(200),"poly");
+chk(hash(500)===hashRef(500),"hash="+hash(500)+" ref="+hashRef(500));
+chk(hash(123)===hashRef(123),"hash123");
+
+var gCold=g(5); for(var i=0;i<40;i++) g(5); var gWarm=g(5);
+
+var t0=performance.now(), acc=0;
+for (var i=0;i<20000;i++) acc += sum(2000);
+var sms=performance.now()-t0;
+var t1=performance.now(), h=0;
+for (var i=0;i<20000;i++) h ^= hash(2000);
+var hms=performance.now()-t1;
+
+document.title="JIT ok="+ok+" engaged="+(gWarm===5)+
+  " hash500="+hash(500)+" sumloopms="+sms.toFixed(1)+" hashloopms="+hms.toFixed(1)+(bad?(" BAD "+bad):"");
+</script></body></html>

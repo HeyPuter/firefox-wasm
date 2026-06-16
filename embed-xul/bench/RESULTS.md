@@ -159,11 +159,23 @@ The per-GL-call proxy is ELIMINATED from the main thread (~9x). Renders correctl
 62644 non-white px, == proxied baseline), animations present per-frame, `glpass=1` content
 WebGL works, input preserved.
 
-CAVEAT / FOLLOW-UP: total GPU work is ~unchanged because the GL MOVED to the Renderer
-thread rather than disappearing, and there it exposed a cost the proxy had masked: WebRender
-(gleam) issues many `glGetError` calls, which are real GPU syncs locally (`getError` 663ms
-proxied -> ~1953ms local on the Renderer thread). Reducing gleam's per-call error checking is
-the next step to turn the proxy removal into a net throughput win (not just main-thread freeing).
+FOLLOW-UP DONE — eliminated the local glGetError GPU syncs. Moving the GL local exposed a
+cost the proxy had masked: WebRender's `Renderer::check_gl_errors()` does a `glGetError` OOM
+probe per texture-cache-update-list (frequent on texture-heavy pages); locally each is a real
+GPU sync. It's NOT debug-gated (runs in release too). Made it a no-op on wasm
+(`renderer/mod.rs check_gl_errors`: `if cfg!(target_arch="wasm32") return`). Also set
+`gfx.webrender.panic-on-gl-error=false` (Nightly default would wrap the GL in gleam's
+per-call ErrorReactingGl). Result on `gpu-heavy.html`: Renderer-thread GL worker 3300ms ->
+1491ms (`getError` 1849 -> 0; what remains is real GL: bufferData/bindFramebuffer/texSubImage2D).
+
+NET (proxied baseline -> OffscreenCanvas + no glGetError syncs), GL-heavy scene over 10s:
+| | before | after |
+|---|---|---|
+| main thread (`[page]`) | 4354ms | **514ms** (~8.5x) |
+| Renderer-thread GL | (on main, proxied) | **1491ms** local, no getError |
+| total active (all threads) | ~21900ms | **19099ms** |
+Per-GL-call proxy eliminated + redundant glGetError GPU syncs eliminated. Renders identical
+(wiki 62644 nonWhite, velzie.rip glpass pink-noise renders), animations + input intact.
 
 ## ATTEMPTED, REVERTED — recomposite-skip (froze continuous animations)
 
