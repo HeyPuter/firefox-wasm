@@ -54,7 +54,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang llvm-dev libclang-dev python3 mercurial unzip
+            clang llvm-dev libclang-dev libpulse-dev python3 mercurial unzip
           # mozconfig.full.emscripten reads $LIBCLANG_PATH for --with-libclang-path.
           echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
 
