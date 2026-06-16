@@ -51,8 +51,8 @@ mergeInto(LibraryManager.library, {
   // gethostbyname on a DNS-resolver pthread, the mapping lands in THAT worker's
   // (per-thread) map -- while the WISP socket shim runs on the runtime main thread
   // and reverse-looks-up an empty map -> WISP CONNECT goes to the raw 172.29.x.x
-  // instead of the hostname (DNS-resolver-thread scheduling made this flaky across
-  // machines). Proxy it to main so the alloc and the reverse lookup share one map.
+  // instead of the hostname. Proxy it to main so the alloc and the reverse lookup
+  // share one map.
   // (Replaces a non-reproducible hand-edit to the system emsdk's library.js.)
   _emscripten_lookup_name__proxy: 'sync',
   _emscripten_lookup_name__deps: ['$UTF8ToString', '$DNS', '$inetPton4'],

@@ -309,12 +309,61 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       fflush(stdout);
     }
 
-    // The prebuilt emscripten Rust std is single-threaded; spawning Rust threads
-    // (stylo's rayon pool) trips "thread handle already set". Force sequential
-    // stylo so STYLE_THREAD_POOL stays None and no Rust threads spawn. (Proper
-    // fix = build-std with +atomics; see rust.mk / PROGRESS.md.)
-    mozilla::Preferences::SetInt("layout.css.stylo-threads", 1);
-    printf("xul_init: set layout.css.stylo-threads=1 (sequential, no Rust threads)\n");
+    // No socket/network process: we have no subprocess support, and networking is
+    // in-process over WISP. With network.process.enabled at its desktop default
+    // (true), Gecko repeatedly tries (and fails) to launch the socket subprocess
+    // ("Failed to launch socket subprocess"), leaving the IPC I/O thread's libevent
+    // pump spinning on a perpetually-ready wakeup pipe (~113k select()/s at idle).
+    // Force it off so the socket process is never attempted -> the IPC pump idles.
+    mozilla::Preferences::SetBool("network.process.enabled", false);
+    mozilla::Preferences::SetBool(
+        "network.http.network_access_on_socket_process.enabled", false);
+    printf("xul_init: disabled socket/network process (single process)\n");
+    fflush(stdout);
+
+    // Stylo thread count. Kept SEQUENTIAL (1) deliberately: build-std+atomics makes
+    // parallel stylo *work* (no more "thread handle already set" abort, threads spawn
+    // fine), but measured on a style-bound page (css-stress, 2400 elems, ~91% style
+    // recalc) it REGRESSES monotonically with thread count (1->170ms, 4->174ms,
+    // 8->188ms per restyle). The emscripten cross-thread sync tax (Atomics futex
+    // wake/wait + spin contention in rayon's work-stealing join) exceeds the
+    // parallelism benefit for fine-grained style traversal. So sequential is faster
+    // here. Override with GECKO_STYLO_THREADS to re-measure (e.g. if the sync tax is
+    // ever reduced). See bench/RESULTS.md.
+    int styloThreads = 1;
+    if (const char* st = getenv("GECKO_STYLO_THREADS")) { int v = atoi(st); if (v != 0) styloThreads = v; }
+    mozilla::Preferences::SetInt("layout.css.stylo-threads", styloThreads);
+    printf("xul_init: set layout.css.stylo-threads=%d\n", styloThreads);
+
+    // ALWAYS-ACTIVE: a windowless browser is "inactive" by default. An inactive
+    // top-level throttles its refresh driver to the background frame rate
+    // (~1fps via layout.throttled_frame_rate), so content requestAnimationFrame,
+    // CSS animations/transitions, smooth scroll and <video> run at ~0.5fps even
+    // though setTimeout is unaffected. We are an embedder that is always presenting
+    // the page, so force it active so the refresh driver ticks at the full frame
+    // rate. (Measured: software-mode rAF 0.5fps -> 60fps. Previously this pref was
+    // set only under GECKO_GPU, where it was also needed to avoid an early-return in
+    // PaintAndRequestComposite.)
+    mozilla::Preferences::SetBool("layout.testing.top-level-always-active", true);
+
+    // GPU compositing (GECKO_GPU=1 / index.html?gpu=1): force in-process hardware
+    // WebRender presenting to the page <canvas> via WebGL2 (GLContextProviderEmscripten).
+    // Set here so it is REPRODUCIBLE -- these were previously hand-added to the staged
+    // greprefs.js, which stage-gre.sh regenerates from dist/bin from scratch, silently
+    // dropping them (-> WebRender falls back to software/disabled -> white canvas).
+    // Gated on the env so the default software RenderDocument+blit path is unchanged.
+    if (getenv("GECKO_GPU")) {
+      // hardware WebRender (not the software backend), single in-process compositor.
+      mozilla::Preferences::SetBool("gfx.webrender.all", true);
+      mozilla::Preferences::SetBool("gfx.webrender.software", false);
+      mozilla::Preferences::SetBool("layers.acceleration.force-enabled", true);
+      mozilla::Preferences::SetBool("layers.gpu-process.enabled", false);
+      // WebGL2 can't losslessly emulate glMapBufferRange, so WebRender's PBO GPU-cache
+      // uploads corrupt; force direct texSubImage uploads (this made primitives render).
+      mozilla::Preferences::SetBool("gfx.webrender.pbo-uploads", false);
+      printf("xul_init: GECKO_GPU -> forced hardware WebRender prefs\n");
+      fflush(stdout);
+    }
 
     // Smooth scrolling: animated over several refresh-driver ticks. With the GPU
     // compositor presenting continuously (the paint loop composites every frame),

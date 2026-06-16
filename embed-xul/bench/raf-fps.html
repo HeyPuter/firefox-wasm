@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>raf throughput</title></head>
+<body>
+<div id="b" style="width:80px;height:80px;background:#08f"></div>
+<script>
+// Refresh-driver / requestAnimationFrame throughput. The engine's idle event-loop
+// pump gates how fast the refresh driver ticks; this measures the achievable
+// rAF rate and per-frame latency stats over a fixed window. Also drives a tiny
+// DOM mutation each frame so a real style/layout/paint cycle runs per frame.
+function post(obj){function send(n){fetch('/bench-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)}).catch(function(){if(n>0)setTimeout(function(){send(n-1);},400);});}send(6);}
+var box = document.getElementById('b');
+var frames = 0, t0 = 0, last = 0, gaps = [];
+var DURATION = 4000;
+function frame(ts) {
+  var now = Date.now();
+  if (!t0) { t0 = now; last = now; }
+  else { gaps.push(now - last); last = now; }
+  frames++;
+  box.style.transform = 'translateX(' + (frames % 60) + 'px)';  // force a visual change
+  if (now - t0 < DURATION) requestAnimationFrame(frame);
+  else {
+    gaps.sort(function (a, b) { return a - b; });
+    var sum = 0; for (var i = 0; i < gaps.length; i++) sum += gaps[i];
+    post({ bench: 'raf-fps', durationMs: now - t0, frames: frames,
+           fps: +(frames / ((now - t0) / 1000)).toFixed(1),
+           gapMedianMs: gaps.length ? gaps[gaps.length >> 1] : null,
+           gapMeanMs: gaps.length ? +(sum / gaps.length).toFixed(2) : null,
+           gapMaxMs: gaps.length ? gaps[gaps.length - 1] : null, ua: navigator.userAgent });
+  }
+}
+setTimeout(function () { requestAnimationFrame(frame); }, 50);
+</script>
+</body></html>

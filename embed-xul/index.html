@@ -149,9 +149,10 @@
       set(KEYCODE, item.keyCode || 0);
       set(CHARCODE, item.charCode || 0);
       set(DX, item.deltaX || 0); set(DY, item.deltaY || 0);
-      if (item.op === OP_LOAD) {
+      if (item.op === OP_LOAD || item.op === 5) {
+        // op 5 (chrome-eval) reads its script from the same URL buffer as a load.
         const bytes = enc.encode(item.url || '');
-        if (bytes.length >= 8190) { log('[harness] URL too long'); return null; }
+        if (bytes.length >= 8190) { log('[harness] URL/script too long'); return null; }
         u8().set(bytes, cmd + URL); u8()[cmd + URL + bytes.length] = 0;
       }
       if (item.op === OP_KEY) {
@@ -238,6 +239,7 @@
       return n;
     }
     window.geckoRender = renderUrl;  // Playwright test hook
+    window.geckoEval = (script) => enqueue({ op: 5, url: script });  // chrome-eval hook (bench/automation)
 
     // --- input forwarding -------------------------------------------------
     // Map a DOM mouse/wheel event to canvas pixel coords (canvas backing is
@@ -416,6 +418,12 @@
           if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
           const mozlog = new URLSearchParams(location.search).get('mozlog');
           if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
+          // Bench/automation knobs: ?stylo=N -> GECKO_STYLO_THREADS, and any
+          // ?env.FOO=bar -> ENV['FOO']=bar for ad-hoc experiments.
+          const sp = new URLSearchParams(location.search);
+          const stylo = sp.get('stylo');
+          if (stylo) m.ENV['GECKO_STYLO_THREADS'] = stylo;
+          for (const [k, v] of sp) if (k.startsWith('env.')) m.ENV[k.slice(4)] = v;
           if (wispUrl && typeof WISP !== 'undefined') {
             WISP.install(m, wispUrl);
             log('[harness] WISP networking enabled via ' + wispUrl);

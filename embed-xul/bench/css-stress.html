@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>css/style-recalc stress</title>
+<style id="rules"></style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// Style-recalc (stylo) stress: build a large DOM + a big stylesheet, then force
+// full style recalcs by toggling a class on <html> and reading layout. Reports
+// the average recalc+reflow time. This is the portion parallel stylo speeds up.
+function buildRules() {
+  // Many rules with descendant/class/nth selectors so selector matching is real work.
+  var css = [];
+  for (var i = 0; i < 400; i++) {
+    css.push('.box.k' + i + ' { color: rgb(' + (i % 255) + ',10,20); padding: ' + (i % 7) + 'px; }');
+    css.push('#root .row:nth-child(' + ((i % 9) + 1) + ') .box { border-width: ' + (i % 4) + 'px; }');
+    css.push('html.alt .box.k' + i + ' { margin-left: ' + (i % 11) + 'px; background: hsl(' + (i % 360) + ',50%,50%); }');
+  }
+  document.getElementById('rules').textContent =
+    '.box{display:inline-block;border:1px solid #ccc;width:40px;height:18px;font-size:10px}' +
+    '.row{display:flex;flex-wrap:wrap}' + css.join('\n');
+}
+function buildDom(rows, perRow) {
+  var root = document.getElementById('root'), html = '';
+  for (var r = 0; r < rows; r++) {
+    html += '<div class="row">';
+    for (var c = 0; c < perRow; c++) { var k = (r * perRow + c) % 400; html += '<span class="box k' + k + '">x</span>'; }
+    html += '</div>';
+  }
+  root.innerHTML = html;
+}
+function post(obj) { function send(n){ fetch('/bench-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)}).catch(function(){ if(n>0) setTimeout(function(){send(n-1);},400);});} send(6); }
+
+setTimeout(function () {
+  try { console.log('CSSBENCH start'); } catch (e) {}
+  var ROWS = 60, PER = 40, ELEMS = ROWS * PER;   // 2400 elements
+  var tBuild = Date.now();
+  buildRules();
+  buildDom(ROWS, PER);
+  document.body.offsetHeight;   // force initial layout
+  var buildMs = Date.now() - tBuild;
+
+  var N = 20, html = document.documentElement, probe = document.querySelector('.box');
+
+  // STYLE-ONLY: toggle a root class (invalidates every .box via html.alt rules) and
+  // flush STYLE recalc via getComputedStyle (no reflow). This is the part parallel
+  // stylo speeds up.
+  var tStyle = Date.now();
+  for (var i = 0; i < N; i++) { html.classList.toggle('alt'); void getComputedStyle(probe).color; }
+  var styleTotalMs = Date.now() - tStyle;
+
+  // FULL: toggle + read layout (style recalc + reflow).
+  var tFull = Date.now();
+  for (var i = 0; i < N; i++) { html.classList.toggle('alt'); void document.body.offsetHeight; }
+  var recalcTotalMs = Date.now() - tFull;
+  try { console.log('CSSBENCH style=' + styleTotalMs + ' full=' + recalcTotalMs); } catch (e) {}
+
+  post({ bench: 'css-stress', elements: ELEMS, buildMs: buildMs, recalcs: N,
+         styleAvgMs: +(styleTotalMs / N).toFixed(2),
+         recalcTotalMs: recalcTotalMs, recalcAvgMs: +(recalcTotalMs / N).toFixed(2),
+         ua: navigator.userAgent });
+}, 50);
+</script>
+</body></html>

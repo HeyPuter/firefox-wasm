@@ -10,6 +10,12 @@ OBJ="$HERE/../obj-full-emscripten"
 SRC="$OBJ/dist/bin"
 DST="$HERE/gre-stage"
 
+# WARNING: gre-stage/ is REGENERATED from scratch on every run (rm -rf below), so
+# anything hand-edited here is silently lost on the next build. Do NOT edit staged
+# files directly. Reproducible alternatives: set prefs via Preferences::Set* in
+# embed-xul.cpp (gate runtime-only ones on an env flag); patch chrome JS in the
+# firefox source so it lands in dist/bin; add runtime assets here by copying them in
+# below (see the fonts block). (A lost GPU-pref edit here caused an all-white ?gpu=1.)
 rm -rf "$DST"; mkdir -p "$DST"
 # -L: dereference symlinks (dist/bin uses relative symlinks into the objdir that
 # would dangle here and break emscripten's file_packager).
