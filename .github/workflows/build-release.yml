@@ -21,13 +21,6 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      firefox_repo:
-        description: 'Gecko engine fork (the patched firefox/ tree)'
-        default: 'MercuryWorkshop/firefox'
-      firefox_ref:
-        description: 'Branch/tag/SHA of the engine fork to build'
-        default: 'main'
 
 permissions:
   contents: write   # create releases / upload assets
@@ -36,8 +29,6 @@ env:
   EMSDK_VERSION: '3.1.56'        # emcc 3.1.56 / clang 19 (must match the port)
   BINARYEN_VERSION: '129'        # newer than emsdk's bundled v117 (rust LLVM21 wasm features)
   RUST_VERSION: '1.95.0'
-  FIREFOX_REPO: ${{ github.event.inputs.firefox_repo || 'MercuryWorkshop/firefox' }}
-  FIREFOX_REF:  ${{ github.event.inputs.firefox_ref  || 'main' }}
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.mozbuild
   MACH_NO_TERMINAL_FOOTER: '1'
 
@@ -46,8 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
-      - name: Checkout embedder + build harness (this repo)
+      - name: Checkout (with the firefox/ engine submodule)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Free up disk space (Gecko objdir is ~26 GB)
         uses: jlumbroso/free-disk-space@main
@@ -58,11 +51,6 @@ jobs:
           haskell: true
           large-packages: true
           swap-storage: false
-
-      - name: Clone the Gecko engine fork into firefox/
-        run: |
-          git clone --depth 1 --branch "$FIREFOX_REF" \
-            "https://github.com/${FIREFOX_REPO}.git" firefox
 
       - name: Install build prerequisites (clang/libclang for bindgen, etc.)
         run: |

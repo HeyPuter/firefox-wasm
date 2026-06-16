@@ -32,8 +32,7 @@ gre-stage/
 # --- dependencies ---
 node_modules/
 
-# --- the Gecko engine fork (published as its own firefox/ repository) ---
-/firefox/
+# (firefox/ is the Gecko engine fork, registered as a git submodule — see .gitmodules)
 
 # --- logs & render/test artifacts ---
 *.log
