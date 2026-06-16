@@ -37,10 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
-      - name: Checkout (with the firefox/ engine submodule)
+      - name: Checkout the embedder + build harness (this repo)
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Free up disk space (Gecko objdir is ~26 GB)
         uses: jlumbroso/free-disk-space@main
@@ -64,11 +62,13 @@ jobs:
         with:
           version: ${{ env.EMSDK_VERSION }}
 
-      - name: Set up binaryen v${{ env.BINARYEN_VERSION }} (wasm-opt)
+      - name: Set up binaryen v${{ env.BINARYEN_VERSION }} (>= v117; for wasm-opt)
         run: |
-          curl -sL "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" \
+          # emsdk's bundled binaryen (v117) rejects rust/LLVM's newer wasm features;
+          # use a complete recent binaryen. em_config reads $EM_BINARYEN_ROOT.
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" \
             | tar xz
-          echo "${GITHUB_WORKSPACE}/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+          echo "EM_BINARYEN_ROOT=${GITHUB_WORKSPACE}/binaryen-version_${BINARYEN_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Rust ${{ env.RUST_VERSION }} (+ rust-src, wasm target)
         uses: dtolnay/rust-toolchain@master
@@ -77,24 +77,11 @@ jobs:
           components: rust-src
           targets: wasm32-unknown-emscripten
 
-      - name: Recreate the binaryen shim (em_config BINARYEN_ROOT)
-        run: |
-          mkdir -p toolchain/binaryen/bin
-          ln -sf "$EMSDK/upstream/bin/"* toolchain/binaryen/bin/ 2>/dev/null || true
-          ln -sf "$(command -v wasm-opt)" toolchain/binaryen/bin/wasm-opt
-          wasm-opt --version
+      # em_config is committed and portable (reads $EMSDK + $EM_BINARYEN_ROOT), so
+      # no shim or config generation is needed here.
 
-      - name: Generate em_config for this runner (paths are machine-specific)
-        run: |
-          cat > em_config <<EOF
-          import os
-          emsdk_path = os.environ['EMSDK']
-          NODE_JS = '$(command -v node)'
-          LLVM_ROOT = emsdk_path + '/upstream/bin'
-          BINARYEN_ROOT = '${GITHUB_WORKSPACE}/toolchain/binaryen'
-          EMSCRIPTEN_ROOT = emsdk_path + '/upstream/emscripten'
-          EOF
-          cat em_config
+      - name: Clone the pinned Gecko engine fork (depth 1)
+        run: make firefox
 
       - name: Rewrite mozconfig absolute paths for this runner
         run: |
@@ -105,21 +92,8 @@ jobs:
             mozconfig.full.emscripten
           grep -nE 'MOZ_OBJDIR|libclang|CFLAGS' mozconfig.full.emscripten
 
-      - name: Vendor the Rust std dependency crates (gitignored, build-std inputs)
-        run: python3 vendor-std-deps.py
-
-      - name: Configure + build the engine (long)
-        run: |
-          cd firefox
-          export EM_CONFIG="${GITHUB_WORKSPACE}/em_config"
-          export MOZCONFIG="${GITHUB_WORKSPACE}/mozconfig.full.emscripten"
-          ./mach configure
-          ./mach build
-
-      - name: Stage GRE + relink the web embedder
-        run: |
-          bash embed-xul/stage-gre.sh
-          bash embed-xul/restrip-relink-web.sh
+      - name: Build (vendor std deps + engine + web) — long
+        run: make web   # firefox already cloned; runs vendor -> mach build -> stage+relink
 
       - name: Package the runtime artifacts
         run: |

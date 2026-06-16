@@ -32,7 +32,8 @@ gre-stage/
 # --- dependencies ---
 node_modules/
 
-# (firefox/ is the Gecko engine fork, registered as a git submodule — see .gitmodules)
+# the Gecko engine fork — shallow-cloned at a pinned commit by `make firefox`
+/firefox/
 
 # --- logs & render/test artifacts ---
 *.log
@@ -50,6 +51,3 @@ node_modules/
 # node deps (also as symlinks, e.g. embed-chrome/node_modules)
 node_modules
 
-# machine-specific toolchain shim: symlinks into the local emsdk (em_config
-# BINARYEN_ROOT points here). Recreate per-machine; do not commit the symlinks.
-/toolchain/binaryen/

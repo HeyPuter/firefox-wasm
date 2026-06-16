@@ -1,6 +1,8 @@
-import os
-emsdk_path = '/usr/lib/emsdk'
-NODE_JS = emsdk_path + '/node/20.18.0_64bit/bin/node'
-LLVM_ROOT = emsdk_path + '/upstream/bin'
-BINARYEN_ROOT = '/home/velzie/src/gecko-wasm/toolchain/binaryen'
-EMSCRIPTEN_ROOT = emsdk_path + '/upstream/emscripten'
+import os, shutil
+EMSDK = os.environ.get('EMSDK', '/usr/lib/emsdk')
+EMSCRIPTEN_ROOT = EMSDK + '/upstream/emscripten'
+LLVM_ROOT = EMSDK + '/upstream/bin'
+# emsdk bundles binaryen v117, which rejects the wasm features rustc/LLVM emit.
+# Point at a complete system binaryen >= v129 instead (override with EM_BINARYEN_ROOT).
+BINARYEN_ROOT = os.environ.get('EM_BINARYEN_ROOT', '/usr')
+NODE_JS = shutil.which('node') or (EMSDK + '/node')

@@ -27,37 +27,29 @@ that are intentionally gitignored.
 ## 1. Prerequisites (exact versions this was built with)
 
 - **emsdk** at `/usr/lib/emsdk` — `emcc` **3.1.56** (clang 19), bundled `node` 20.18.0.
-  (`em_config` hardcodes these paths.)
-- **binaryen `wasm-opt` v129** at `/usr/bin/wasm-opt`. emsdk bundles binaryen
-  v117, which **rejects** the newer wasm features (bulk-memory-opt,
-  call-indirect-overlong) that `rustc` 1.95 / LLVM 21 emits — so a newer
-  `wasm-opt` must shadow it (see the shim in step 2).
+  (`em_config` reads `$EMSDK`, defaulting to `/usr/lib/emsdk`.)
+- **binaryen ≥ v129** installed system-wide (`apt install binaryen`,
+  `pacman -S binaryen`, `brew install binaryen`, or a release from
+  github.com/WebAssembly/binaryen). emsdk bundles binaryen v117, which **rejects**
+  the newer wasm features (bulk-memory-opt, call-indirect-overlong) that `rustc`
+  1.95 / LLVM 21 emits, so `em_config` points emscripten's `BINARYEN_ROOT` at the
+  system binaryen instead — default `/usr`; if yours is elsewhere set
+  `EM_BINARYEN_ROOT=<prefix>` (e.g. `/usr/local`, `/opt/homebrew`) so that
+  `$EM_BINARYEN_ROOT/bin/wasm-opt` exists.
 - **Rust** `rustc` **1.95.0** (LLVM 21), with:
   - `rustup target add wasm32-unknown-emscripten`
-  - `rustup component add rust-src` (needed for `-Z build-std`, see step 3)
+  - `rustup component add rust-src` (needed for `-Z build-std`, see step 2)
 - **Node + Playwright** — only for the dev/test harness in `llm_tests/`. Those
   scripts reuse a Chromium from `~/src/puter/node_modules/playwright`.
 - **`wisp-server-node`** — runtime networking; `server.cjs` `require()`s it
   (vendored under `embed-xul/node_modules/`).
 
-> The absolute paths above (`/usr/lib/emsdk`, the repo path) are baked into
-> `em_config` and some scripts. If yours differ, edit `em_config` and the
-> `DISTBIN`/`STRIP` constants in `embed-xul/restrip-relink-web.sh`.
+> `em_config` (committed) derives its paths from `$EMSDK` + `PATH`, so it needs no
+> editing. `mozconfig.full.emscripten` still has absolute paths — if your checkout
+> isn't at `/home/velzie/src/gecko-wasm`, rewrite them (and the `DISTBIN`/`STRIP`
+> constants in `embed-xul/restrip-relink-web.sh`).
 
-## 2. Binaryen shim (gitignored — recreate)
-
-`em_config`'s `BINARYEN_ROOT` points at `toolchain/binaryen`, a directory of
-symlinks: every emsdk LLVM tool, with `wasm-opt` overridden to the system v129.
-It's machine-specific (symlinks into your emsdk) so it's **gitignored** — recreate it:
-
-```sh
-cd <repo>
-mkdir -p toolchain/binaryen/bin
-ln -sf /usr/lib/emsdk/upstream/bin/* toolchain/binaryen/bin/ 2>/dev/null  # LLVM tools
-ln -sf /usr/bin/wasm-opt toolchain/binaryen/bin/wasm-opt                  # override → v129
-```
-
-## 3. Rust std dependency vendoring (gitignored — regenerate)
+## 2. Rust std dependency vendoring (gitignored — regenerate)
 
 The wasm build compiles the Rust **standard library from source** via
 `-Z build-std` (enabled, emscripten-gated, in the committed
@@ -86,7 +78,7 @@ when the version matches — so it never touches the committed, patched crates
 (verified). If `mach build` later errors with a cargo checksum / "failed to
 verify" message, this vendoring is incomplete — re-run the script.
 
-## 4. Build
+## 3. Build
 
 ```sh
 cd firefox
@@ -106,7 +98,7 @@ bash embed-xul/stage-gre.sh           # only needed after the GRE resources chan
 bash embed-xul/restrip-relink-web.sh  # libxul.so → stripped → gecko.{js,wasm,data}
 ```
 
-## 5. Run
+## 4. Run
 
 ```sh
 node embed-xul/server.cjs             # serves on a local port with COOP/COEP + WISP
@@ -123,9 +115,14 @@ For the full Firefox front-end build, use `embed-chrome/` (its own `server.cjs`
 - All **in-tree engine patches** (build-system wasm target, the 7 Rust crate
   fixes, headless gfx backend, libevent emscripten config, etc.) are **committed
   in `firefox/`** — applied automatically on clone; you don't reapply them.
+- `firefox/` is the Gecko engine fork (`MercuryWorkshop/firefox`) — not committed
+  here; **`make firefox`** shallow-clones it (depth 1) at the pinned commit
+  (`FIREFOX_REF` in the `Makefile`). `make` runs the whole pipeline
+  (firefox → vendor → build → web); the numbered steps above are its manual
+  equivalents.
 - Gitignored & regenerable (not published): `obj-*-emscripten/` build trees, the
-  `toolchain/binaryen` shim (step 2), the std-vendor crates (step 3), and the
-  build outputs (`gecko.*`, `lib*.stripped.so`, `gre-stage/`, logs, render dumps).
+  std-vendor crates (step 2), and the build outputs (`gecko.*`,
+  `lib*.stripped.so`, `gre-stage/`, logs, render dumps).
 - Dev/verifier scripts live in `llm_tests/` (mirroring `embed-xul/` /
   `embed-chrome/`). Each runs its own inline server rooted at its directory, so
   to run one it needs the build outputs (`index.html`, `gecko.*`) alongside it.
