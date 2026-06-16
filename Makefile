@@ -4,8 +4,8 @@
 #   make vendor     vendor the Rust std deps for -Z build-std (vendor-std-deps.py)
 #   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (auto-configures)
 #   make configure  force a reconfigure (rarely needed; `build` does it automatically)
-#   make web        stage GRE + relink the embed-xul web build -> embed-xul/gecko.{js,wasm,data}
-#   make all        firefox -> vendor -> build -> web   (default)
+#   make web        stage GRE + relink the web build (builds the engine only if none yet)
+#   make all        firefox -> vendor -> (build if needed) -> web   (default)
 #   make run        serve the web build (server.cjs)
 #   make clean      remove the web build outputs
 #   make distclean  also remove the objdir and the firefox/ checkout
@@ -27,6 +27,11 @@ MOZBUILD_STATE_PATH ?= $(HOME)/.mozbuild
 RELEASE             ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH
 export GECKO_RELEASE := $(RELEASE)
+
+# Engine build output (RELEASE uses its own objdir, matching the mozconfig + embed
+# scripts). `web` keys off libxul existing to decide whether a first build is needed.
+OBJDIR := $(ROOT)/obj-full-emscripten$(if $(RELEASE),-release)
+LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 
 .PHONY: all release firefox vendor configure build web run clean distclean
 
@@ -60,7 +65,11 @@ build: firefox vendor
 configure: firefox vendor
 	cd firefox && ./mach configure
 
-web: build
+# `web` REUSES an existing engine build: it runs `mach build` only when there's no
+# libxul yet (first time / fresh objdir). To rebuild the engine deliberately, run
+# `make build` (then `make web`).
+web:
+	@test -e "$(LIBXUL)" || $(MAKE) build
 	bash embed-xul/stage-gre.sh
 	bash embed-xul/restrip-relink-web.sh
 

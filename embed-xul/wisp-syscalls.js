@@ -44,6 +44,23 @@ mergeInto(LibraryManager.library, {
     return sock.stream.fd;
   },
 
+  // --- DNS: keep the synthetic-IP <-> hostname map on the proxied (main) thread ---
+  // gethostbyname() calls _emscripten_lookup_name to allocate a fake 172.29.x.x IP
+  // and record IP<->hostname in $DNS.address_map. Stock emscripten proxies
+  // getaddrinfo to main but NOT _emscripten_lookup_name, so when Gecko resolves via
+  // gethostbyname on a DNS-resolver pthread, the mapping lands in THAT worker's
+  // (per-thread) map -- while the WISP socket shim runs on the runtime main thread
+  // and reverse-looks-up an empty map -> WISP CONNECT goes to the raw 172.29.x.x
+  // instead of the hostname (DNS-resolver-thread scheduling made this flaky across
+  // machines). Proxy it to main so the alloc and the reverse lookup share one map.
+  // (Replaces a non-reproducible hand-edit to the system emsdk's library.js.)
+  _emscripten_lookup_name__proxy: 'sync',
+  _emscripten_lookup_name__deps: ['$UTF8ToString', '$DNS', '$inetPton4'],
+  _emscripten_lookup_name: function (name) {
+    var nameString = UTF8ToString(name);
+    return inetPton4(DNS.lookup_name(nameString));
+  },
+
   // --- poll() ------------------------------------------------------------------
   // Readiness scan (runs on the main thread; identical to emscripten's default
   // __syscall_poll body). Reads pollfd.fd/.events, writes pollfd.revents.
