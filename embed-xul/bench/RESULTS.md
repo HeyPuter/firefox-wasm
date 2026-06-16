@@ -80,34 +80,163 @@ subprocess support; the desktop default (true) makes Gecko repeatedly fail to la
 the socket subprocess ("Failed to launch socket subprocess"). Removes that error
 spam. Did NOT change idle CPU (the spin below is not socket-process-related).
 
-## MAJOR FINDING — idle CPU ≈ 2 cores (characterized; no safe fix yet)
+## MAJOR WIN — un-proxy select(): idle CPU 2.0 → 0.26 cores (~8x), VERIFIED
 
-Ground truth (`bench/idle-cpu.cjs`): the engine burns **~2.0 cores while completely
-idle** (no page loaded). A real browser idles at ~0%. The same loops run during real
-loads, so this also steals main-thread capacity from real work.
+The engine was burning **~2.0 cores while completely idle** (ground truth via
+`bench/idle-cpu.cjs`), and the same loops stole main-thread capacity during loads.
 
 Root cause (traced with `bench/profile.cjs` per-target + caller attribution + a
-`select()` rate probe):
-- NSPR `PR_Poll` maps to `select()` here (emscripten `poll()` routes through
-  `select()` — the `__syscall_poll` override is dead code; everything is select).
-- `___syscall__newselect` is in emscripten's built-in **proxiedFunctionTable**, so
-  every `select()` from a Necko worker is force-proxied to the runtime **main**
-  thread. There `ENVIRONMENT_IS_PTHREAD=false`, so the wisp wrapper takes the
-  non-pthread fast path and **cannot `Atomics.wait`** → returns immediately.
-- So the socket-transport poll loop and libevent's IPC select backend **busy-spin**:
-  measured ~**100,000 select/s** on the main thread (one thread, infinite timeout),
-  pinning ~2 cores between the spinning worker(s) and the main thread servicing the
-  proxied scans.
+`select()` rate probe): NSPR `PR_Poll` maps to `select()` here, and
+`___syscall__newselect` is in emscripten's built-in **proxiedFunctionTable**, so every
+`select()` from a Necko worker was force-proxied to the runtime **main** thread, where
+`ENVIRONMENT_IS_PTHREAD=false` → the wrapper can't `Atomics.wait` → returns immediately
+→ the socket-transport poll loop + libevent IPC select backend **busy-spin ~100k/s**.
 
-Attempted fix: un-proxy select (`__syscall__newselect__proxy: ''` — empty string is
-the only value that survives emscripten's `=== undefined → 'sync'` re-default AND is
-falsy so the jsifier skips proxy-wrapping) so the wrapper runs on the calling worker
-and `Atomics.wait`s there. **Result: idle CPU 2.0 → 0.26 cores (8x) — but it BROKE
-networking** (microjs/page loads stall; select genuinely needs to run where SOCKFS
-is). **Reverted.** A real fix needs either the readiness scan's wakeups to cover all
-fds these loops wait on (libevent self-pipe etc.) so a worker-side block is safe, or
-to stop the self-reposting event that keeps the socket thread's queue non-empty
-(→ `PR_INTERVAL_NO_WAIT`). Left as the top open structural target.
+FIX (`wisp-syscalls.js`): `__syscall__newselect__proxy: ''` un-proxies select so the
+wrapper runs on the calling worker and blocks in `Atomics.wait` (woken by the
+wakeword). Empty string is the one opt-out that works: a string (the decorator
+validator rejects a boolean), defined (survives library.js's `=== undefined → 'sync'`
+re-default), and falsy (jsifier skips proxy-wrapping). The first attempt *seemed* to
+break networking — that was a red herring: a worker-side `ReferenceError:
+WISP_POLL_FALLBACK_MS is not defined`, because a top-level `var` in a `--js-library`
+is only emitted into the main module, not `gecko.worker.js`. Making it a `$`-prefixed
+library symbol (`$WISP_POLL_FALLBACK_MS`, listed in the wrappers' `__deps`) fixed it.
+
+Verified (final binary):
+| metric | before | after |
+|---|---|---|
+| idle CPU (ground truth) | ~2.0 cores | **0.26 cores** |
+| idle active CPU (profiled) | 8.8 s / 8 s | **0.77 s / 8 s** |
+| load: `_emscripten_get_now` (clock) | ~18% | **0.1–1.8%** (60x less idle) |
+| load: proxy `mailbox_send` | ~10% | **0.1%** |
+| microjs (HTTP/WISP + JS) | works | works (5.4 s) |
+| rAF / css / wikipedia HTTPS render | ok | ok (wiki 154k non-white px) |
+
+This single fix resolved the idle-spin, the #1 clock-crossing cost, AND the proxy tax
+— all symptoms of the same spin. NSPR's poll-timeout/PollableEvent path turned out to
+work fine (self-pipe `PR_Write`/`PR_Read` seen in MOZ_LOG); the only problem was that
+select couldn't block. The 50 ms fallback is just a safety net for missed wakeups
+(libevent's self-pipe writes don't bump the wakeword); the wakeword handles the common
+case. Idle could go lower with a longer fallback, kept at 50 ms for wakeup latency.
+
+## WIN — software blit (BGRA→RGBA present path), ~20% → ~15% of load active
+`index.html` `blit()` ran a per-pixel byte loop + `createImageData(W,H)` every paint
+(every frame at the full refresh rate now). Rewrote it to swizzle a 32-bit WORD at a
+time (~4x fewer ops) and reuse ONE ImageData (no per-frame alloc/GC). Verified
+color-correct (`bench/sw-pixel-check.cjs`) + wikipedia renders identically. blit
+852→571 ms; `createImageData` gone from the profile. Harness-only (no rebuild).
+
+## WIN — GPU-mode: OffscreenCanvas, compositor GL local on the Renderer thread (no proxy)
+
+The compositor's WebGL2 context was created with `proxyContextToMainThread=ALWAYS`, so
+EVERY GL call WebRender issued from its Renderer pthread was marshalled to the main
+thread (where the #screen DOM canvas lived). On a GL-heavy page this dominates the main
+thread. Fix: transfer #screen to the Renderer thread as an OffscreenCanvas so the context
+is created LOCAL there (no per-call proxy), and present each frame explicitly.
+
+Implementation (engine + embedder, no emsdk source edits):
+- NSPR `ptthread.c`: one-shot `PR_SetTransferredCanvasForNextThread()` -> sets emscripten's
+  transferred-canvas pthread attr; consumed by the next `_PR_CreateThread`.
+- `RenderThread::Start`: calls it just before `NS_NewNamedThread("Renderer")` (GPU mode),
+  so #screen is transferred to that thread at spawn (rides the `run` message -> reliable,
+  no "worker can't receive while blocked" race).
+- `GLContextProviderEmscripten`: `PROXY_FALLBACK` (local if transferred, else safe proxy),
+  `renderViaOffscreenBackBuffer=false` (render straight to the OffscreenCanvas FB0).
+- Present: the WebGL implicit swap can't fire on a blocking emscripten pthread (it never
+  yields to its JS event loop) and `gl.commit()` was removed from browsers, so present
+  EXPLICITLY: `OffscreenCanvas.transferToImageBitmap()` -> worker->main `postMessage`
+  (zero-copy transfer) -> a `bitmaprenderer` overlay (#glout, pointer-events:none, over
+  #screen) displays it. #screen stays in the DOM for input.
+- Build: `-sOFFSCREENCANVAS_SUPPORT=1` + `OFFSCREENCANVASES_TO_PTHREAD=#gldummy` (a throwaway
+  1x1 canvas the PROXY_TO_PTHREAD app thread harmlessly owns; emscripten's crt1_proxy_main
+  forces a default transfer that aborts on the nonexistent "#canvas").
+
+Verified (GL-heavy `gpu-heavy.html`, 300 layered/blended/shadowed animated elements):
+| main thread (`[page]`) GL+proxy | before (PROXY_ALWAYS) | after (OffscreenCanvas) |
+|---|---|---|
+| active over 10s | **4354ms** (`getError` 663, `futex_wake` 443) | **484ms** (`transferFromImageBitmap` 16) |
+The per-GL-call proxy is ELIMINATED from the main thread (~9x). Renders correctly (wiki
+62644 non-white px, == proxied baseline), animations present per-frame, `glpass=1` content
+WebGL works, input preserved.
+
+CAVEAT / FOLLOW-UP: total GPU work is ~unchanged because the GL MOVED to the Renderer
+thread rather than disappearing, and there it exposed a cost the proxy had masked: WebRender
+(gleam) issues many `glGetError` calls, which are real GPU syncs locally (`getError` 663ms
+proxied -> ~1953ms local on the Renderer thread). Reducing gleam's per-call error checking is
+the next step to turn the proxy removal into a net throughput win (not just main-thread freeing).
+
+## ATTEMPTED, REVERTED — recomposite-skip (froze continuous animations)
+
+Skipping `gpu_present`'s paint when nothing changed (gate via `HasInvalidFrameInSubtree` +
+`SetNeverPainting`) cut static-page steady-state 0.21->0.07 cores and was briefly documented
+as a win. But verification (prompted by the glpass/WebGL-sites check) showed it FREEZES
+continuous animations: the frame-invalidation bits miss transform/opacity (layer-tree) and
+content canvas/WebGL/video redraws, and `SetNeverPainting(true)` (needed to suppress the
+autonomous recomposite) also throttles CSS animations. `HasReasonsToTick` catches everything
+but is contaminated by our own scheduled Paint phase (perpetually true). No clean gate exists,
+so REVERTED to always-paint. (Finding: the windowless PuppetWidget reports `NeedsPaint()`
+always-true, so the refresh driver recomposites every vsync; the OffscreenCanvas work above
+makes each such composite cheap instead, which is the safer fix.)
+
+## (superseded) earlier recomposite-skip writeup
+
+In GPU mode (`?gpu=1`, in-process WebRender -> WebGL2 -> canvas) the engine was
+**rebuilding the WebRender display list and recompositing the full scene on every
+vsync even when nothing on the page changed**. Traced (per-target profiler +
+instrumented `nsRefreshDriver::Tick`/`PresShell::PaintSynchronously`/
+`CompositorVsyncScheduler::Composite`, RenderReasons `0x10001` = VSYNC|SCENE every
+frame): the refresh driver's Paint phase runs each tick -> `PaintSynchronously()`,
+whose only "is a repaint needed" gate is `widget->NeedsPaint()`. The content's
+**PuppetWidget hardcodes `NeedsPaint()` to `mVisible` (always true)**, so a fresh
+display list + composite happened ~60x/s for a static page (the proxied per-GL-call
+tax applies to each of those recomposites).
+
+FIX (`embed-xul.cpp` `gpu_present`, embedder-only — no engine change): detect real
+change via the display root's frame invalidation bits (`HasInvalidFrameInSubtree()`,
+which a change sets and only a display-list build clears, so they survive the op=4
+polling cadence) and, when nothing changed, set `PresShell::SetNeverPainting(true)`.
+`PaintSynchronously()` early-returns on `IsNeverPainting()`, so the autonomous
+per-vsync repaint is suppressed and the refresh driver goes fully idle (tick reasons
+-> `<none>`). A 2-frame grace (re-armed every animating frame) covers explicit-swap
+present latency and keeps animation at full rate.
+
+Verified (clean final binary, static `gpu-static.html`):
+| metric | before | after |
+|---|---|---|
+| steady-state active (profiler, gecko-internal) | ~0.21 cores | **0.07 cores** (~3x) |
+| static CPU (/proc, headed all-procs) | ~0.35 cores | **0.17 cores** (~2x) |
+| rAF animation (raf-fps, GPU) | 60.5 fps | **60.5 fps** (no throttle) |
+| static render | 290789 non-white px | 290789 (identical) |
+| delayed one-shot change composites | yes | yes |
+| wikipedia GPU render | 62044 px | 62044 (identical) |
+
+The win helps every mostly-static page (the common case) and removes the wasted
+per-vsync proxied-GL recomposite. Tools added: `gpu-static.html`, `gpu-delayed.html`,
+`gpu-paint-check.cjs` (correctness+cpu), `profile.cjs --settle=N` (isolate
+steady-state from load) / `--engineqs=` (engine URL query for env A/B).
+
+NOTE (negative finding from the same investigation): `HeadlessWidget::NeedsPaint()`
+is *also* hardcoded always-true, but the **main content paints through PuppetWidget,
+not HeadlessWidget** (confirmed: HeadlessWidget::NeedsPaint never called on the
+content path), so fixing HeadlessWidget is inert here. The gpu_present-side gate is
+the correct, widget-agnostic fix. Also: `./mach build` piped through `grep`/`tail`
+can hide a compile error so the stale libxul keeps getting staged ("link rc=0" from
+the embedder relink against the old lib) — always check `build rc` + grep the wasm
+for your probe strings to confirm an engine change actually landed.
+
+## INVESTIGATED, NOT A WIN — PBL first-call tier-up (disproven by measurement)
+A wiki/microjs load profile showed `js::Interpret` (the slow C++ interpreter) at ~13%
+of JS self-time alongside PBL. Hypothesis: functions called once but with hot internal
+loops never tier up to PBL (no JIT/OSR; `CanEnterPortableBaselineInterpreter` gates on
+warm-up count, default threshold 10). Changed `<=`→`<` (engine rebuild) AND forced the
+threshold to 0 via the `JIT_OPTION_portableBaselineInterpreterWarmUpThreshold` env
+override. Result: **microjs got SLOWER, 5321→5956 ms** (props 1247→1620, strings
+696→943). PBL's per-script JitScript + IC setup isn't amortized for cold/once-called
+code, so `js::Interpret` is genuinely the faster tier there — SpiderMonkey's threshold
+of 10 is correctly tuned. Reverted the threshold override; left the inert `<` (with the
+default threshold it's just a 1-invocation-earlier tier-up for hot functions). The JS
+tier split is near-optimal; the no-JIT interpreter cost is fundamental. (Also note: a
+single .cpp edit triggered a full ~40-min Gecko rebuild — the objdir invalidates broadly.)
 
 ## Profiling findings (active time; idle pool-thread frames excluded)
 - `_emscripten_get_now` (wasm->JS performance.now crossing) is the #1 active cost

@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>css keyframe anim</title>
+<style>
+@keyframes bg { 0%{background:#ff0000} 33%{background:#00ff00} 66%{background:#0000ff} 100%{background:#ff0000} }
+html,body { margin:0; height:100%; }
+body { animation: bg 1.5s linear infinite; }
+</style></head>
+<body>
+<!-- Full-screen background-color keyframe animation: NO requestAnimationFrame, NO JS.
+     Driven entirely by the refresh driver's animation observers. Full-screen so the
+     whole-canvas average color changes detectably (the small-box version was too
+     insensitive for whole-screen sampling). -->
+</body></html>

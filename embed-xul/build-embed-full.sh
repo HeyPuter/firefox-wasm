@@ -119,6 +119,17 @@ EMSETTINGS=(
   -sOFFSCREEN_FRAMEBUFFER=1
   -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1
   -sGL_ENABLE_GET_PROC_ADDRESS=1
+  # GPU mode routes the page canvas (#screen) to WebRender's Renderer pthread as a
+  # transferred OffscreenCanvas (RenderThread::Start + NSPR settransferredcanvases),
+  # so its compositor GL context is created LOCAL on that worker (no per-GL-call proxy
+  # to the main thread). Requires OffscreenCanvas support at build time.
+  -sOFFSCREENCANVAS_SUPPORT=1
+  # emscripten's PROXY_TO_PTHREAD app thread transfers the default OFFSCREENCANVASES_TO_PTHREAD
+  # canvas to itself (crt1_proxy_main passes MAX_PTR). The default "#canvas" doesn't exist
+  # here and aborts startup, and "" is rejected by the flag parser, so point it at a
+  # throwaway 1x1 #gldummy canvas (index.html) the app thread can harmlessly own. The real
+  # page canvas (#screen) is transferred to the Renderer thread via the pthread attr.
+  -sOFFSCREENCANVASES_TO_PTHREAD=#gldummy
 )
 
 # DEBUG=1: keep DWARF so wasm crash offsets can be mapped to source lines with

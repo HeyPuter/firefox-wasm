@@ -13,30 +13,38 @@
 //     initial load, pushing socket fds past 63 -> invisible to select() -> stalls.
 //     We scan the full fd_set (musl FD_SETSIZE=1024) and raise the socket() ceiling.
 //
-// (2) DON'T BUSY-SPIN. emscripten's poll()/select() are non-blocking: they scan fd
-//     readiness and return immediately, ignoring the timeout (they can't block --
-//     SOCKFS + the WISP shim live on the runtime main thread, which must stay free
-//     to receive WISP WebSocket messages). But Necko's socket-transport thread
-//     calls poll(timeout) EXPECTING it to block until a socket is ready, so it
-//     turns into a CPU-burning busy-spin during every network wait -- each
-//     iteration proxies a syscall to the main thread and reads the clock (both very
-//     expensive in wasm). Fix: split each call into
-//       - a readiness SCAN proxied to the main thread (where SOCKFS lives), and
-//       - a worker-side wrapper that, when nothing is ready, sleeps in Atomics.wait
-//         on a shared futex word (wisp_wakeword) instead of spinning. The main
-//         thread bumps + notifies that word on any WISP socket activity (see
-//         wisp-bridge.js) so the loop wakes immediately; a small fallback slice
-//         re-scans for non-socket fds (e.g. the PollableEvent self-pipe) whose
-//         readiness changes don't go through WISP.
-// Max sleep per poll()/select() before re-scanning, as a SAFETY net only: the
-// poll loop is woken immediately by the shared wakeword on socket activity
-// (wisp-bridge.js) and on cross-thread Dispatch (nsSocketTransportService, which
-// bumps wisp_wakeword since emscripten has no PollableEvent). So this large value
-// just bounds recovery if a wakeup is ever missed; it does NOT cost continuous
-// polling. (Necko's own finite poll timeouts are still respected via Math.min.)
-var WISP_POLL_FALLBACK_MS = 250;
-
+// (2) DON'T BUSY-SPIN (the big one). emscripten lists select() (__syscall__newselect)
+//     in its proxiedFunctionTable, so by default every select() from a Necko worker
+//     is proxied to the runtime MAIN thread. There ENVIRONMENT_IS_PTHREAD is false,
+//     so the wrapper can't Atomics.wait -> it returns immediately, and Necko's
+//     socket-transport poll loop (PR_Poll maps to select() here) + libevent's IPC
+//     select backend BUSY-SPIN at ~100k select/s = ~2 idle cores, and they saturate
+//     the main thread + flood it with proxied scans and clock reads during loads.
+//     FIX: __syscall__newselect__proxy:'' un-proxies select so the wrapper runs on
+//     the CALLING worker (where Atomics.wait IS allowed); we split each call into
+//       - a readiness SCAN still proxied to main (wisp_select_scan, __proxy:'sync'),
+//         since SOCKFS lives there, and
+//       - the worker-side wrapper, which when nothing is ready sleeps in Atomics.wait
+//         on a shared futex word (wisp_wakeword). The main thread bumps + notifies
+//         that word on any WISP socket activity (wisp-bridge.js) and on cross-thread
+//         Dispatch (nsSocketTransportService WispWakeSocketPoll), so the loop wakes
+//         immediately; a fallback slice re-scans in case a wakeup is ever missed.
+//     Measured: idle active CPU 8.8s/8s -> 0.77s/8s, _emscripten_get_now 60x lower,
+//     proxy mailbox_send ~gone; networking + rendering unaffected (microjs, wikipedia).
+//     NOTE: poll() (__syscall_poll) is NOT in the proxied table so it already ran on
+//     the worker, but NSPR routes everything through select() so poll() is unused.
+// Max sleep per poll()/select() before re-scanning, a SAFETY net only: the loop is
+// woken immediately by the wakeword on socket activity / Dispatch, so this just
+// bounds recovery if a wakeup is missed. (Necko's finite poll timeouts still honored
+// via Math.min.)
 mergeInto(LibraryManager.library, {
+  // $-prefixed so emscripten emits it into BOTH the main module AND the worker
+  // (gecko.worker.js). A plain top-level `var` is only in the main scope, so a
+  // worker-side reference throws ReferenceError -- which is exactly what broke
+  // networking once select() stopped being proxied to main and started running on
+  // the socket-transport worker. Functions that use it list it in __deps.
+  $WISP_POLL_FALLBACK_MS: 50,
+
   __syscall_socket__proxy: 'sync',
   __syscall_socket__deps: ['$SOCKFS'],
   __syscall_socket: function (domain, type, protocol) {
@@ -87,18 +95,13 @@ mergeInto(LibraryManager.library, {
     return nonzero;
   },
   // Worker-side blocking wrapper. timeout is in ms (<0 = infinite, 0 = poll once).
-  // We sleep AT MOST one fallback slice (woken early by the wakeword on WISP
-  // activity), then return the scan result -- even if 0. Returning early from
-  // poll() is always valid (the caller re-checks), and it is REQUIRED here: this
-  // platform has no working PollableEvent (pipe2 is unsupported), so Necko's
-  // socket-transport loop relies on poll() returning to fall through and process
-  // its event queue. Blocking indefinitely (waiting for fd readiness that only
-  // arrives via the queue) would deadlock. So this just throttles the old busy-
-  // spin to ~1/slice Hz. poll() only writes revents, so no snapshot is needed.
-  // NOTE: no __proxy key -> runs on the CALLING thread (the socket-transport
-  // worker), where Atomics.wait is allowed. ('none' is NOT "don't proxy" -- the
-  // jsifier treats any truthy __proxy, including 'none', as async-proxy.)
-  __syscall_poll__deps: ['wisp_poll_scan'],
+  // Sleeps AT MOST one fallback slice (woken early by the wakeword on WISP activity
+  // / Dispatch), then returns the scan result -- even if 0. Returning early is always
+  // valid (the caller re-checks). poll() only writes revents, so no snapshot needed.
+  // NOTE: no __proxy key -> runs on the CALLING thread, where Atomics.wait is allowed.
+  // ('none' is NOT "don't proxy" -- the jsifier treats any truthy __proxy, including
+  // 'none', as async-proxy.) poll() is unused in practice (NSPR routes via select).
+  __syscall_poll__deps: ['wisp_poll_scan', '$WISP_POLL_FALLBACK_MS'],
   __syscall_poll: function (fds, nfds, timeout) {
     if (timeout === 0 || typeof ENVIRONMENT_IS_PTHREAD === 'undefined' || !ENVIRONMENT_IS_PTHREAD) {
       return _wisp_poll_scan(fds, nfds);
@@ -160,8 +163,16 @@ mergeInto(LibraryManager.library, {
   // Worker-side blocking wrapper. Like poll() above, sleeps at most one fallback
   // slice then returns the scan result. The scan rewrites the fd_sets in place, so
   // we snapshot the requested masks and restore them before the post-wait re-scan.
-  // No __proxy key -> runs on the calling worker (see poll() note above).
-  __syscall__newselect__deps: ['wisp_select_scan'],
+  // UN-PROXY select (THE perf fix; see job (2) up top). emscripten lists select in
+  // proxiedFunctionTable and defaults its __proxy to 'sync' (library.js:
+  // "if (library[x+'__proxy'] === undefined) library[x+'__proxy']='sync'"), forcing
+  // it onto the runtime main thread where it can't Atomics.wait and busy-spins. The
+  // empty string is the opt-out: it's a string (the decorator validator rejects a
+  // boolean), it's defined (so it survives the `=== undefined -> 'sync'` re-default),
+  // and it's falsy (so the jsifier's `if (proxyingMode)` gate skips proxy-wrapping).
+  // -> select runs on the calling worker, where Atomics.wait blocks correctly.
+  __syscall__newselect__proxy: '',
+  __syscall__newselect__deps: ['wisp_select_scan', '$WISP_POLL_FALLBACK_MS'],
   __syscall__newselect: function (nfds, readfds, writefds, exceptfds, timeout) {
     var timeoutMs = -1;
     if (timeout) {

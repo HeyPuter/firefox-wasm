@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>gpu static</title>
+<style>.b{display:inline-block;width:38px;height:18px;margin:1px;border:1px solid #888;font-size:9px}</style>
+</head>
+<body style="font-family:sans-serif">
+<h1>GPU static page</h1>
+<div id="root"></div>
+<script>
+// Build a moderately complex STATIC scene (no animation, no rAF, no timers) so the
+// GPU paint loop (op=4 -> gpu_present every 40ms) composites a non-trivial but
+// UNCHANGING scene. Reveals whether WebRender re-composites unchanged content.
+var h = '';
+for (var i = 0; i < 1500; i++) h += '<span class="b" style="background:hsl(' + (i % 360) + ',60%,70%)">' + i + '</span>';
+document.getElementById('root').innerHTML = h;
+document.body.offsetHeight;
+// no POST, no animation — just sit there.
+</script>
+</body></html>

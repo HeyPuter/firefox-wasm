@@ -49,8 +49,18 @@
     <button data-url="data:text/html,<table border='1' cellpadding='8'><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>">table</button>
   </div>
 
+  <!-- position:relative wrapper so GPU mode can overlay the #glout present canvas
+       (bitmaprenderer) exactly over #screen while leaving #screen to receive input. -->
+  <div id="screenwrap" style="position:relative;display:inline-block;line-height:0">
   <canvas id="screen" width="800" height="600" tabindex="0"
           title="click to interact; keyboard goes to the page"></canvas>
+  </div>
+  <!-- GPU mode: emscripten's PROXY_TO_PTHREAD app thread is created with a "transfer
+       the default OffscreenCanvas" attr (crt1_proxy_main), so OFFSCREENCANVASES_TO_PTHREAD
+       must name a canvas that EXISTS or startup aborts. We point it at this throwaway
+       1x1 canvas (the app thread harmlessly owns it); the real page canvas (#screen) is
+       transferred explicitly to the WebRender Renderer thread instead. -->
+  <canvas id="gldummy" width="1" height="1" style="display:none"></canvas>
   <pre id="log"></pre>
 
   <script src="gecko.js"></script>
@@ -90,8 +100,25 @@
     const ctx = gpuMode ? null : canvas.getContext('2d');
     const enc = new TextEncoder();
 
-    function log(...a) { const s = a.join(' '); logEl.textContent += s + '\n';
-      logEl.scrollTop = logEl.scrollHeight; console.log(s); }
+    // The engine prints a lot to stdout/stderr; tee'ing each line into a growing <pre>
+    // via `textContent +=` is O(n^2) and forces a layout per line (`scrollHeight`),
+    // which profiled at ~240ms (a big chunk of main-thread time) during a load. Keep a
+    // bounded ring of recent lines and flush the DOM at most ONCE PER FRAME (coalescing
+    // bursts), so logging is cheap and never quadratic. console.log is kept (cheap;
+    // used by the test harness), the costly DOM work is batched.
+    const _logLines = []; let _logDirty = false;
+    function _flushLog() {
+      _logDirty = false;
+      logEl.textContent = _logLines.join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function log(...a) {
+      const s = a.join(' ');
+      _logLines.push(s);
+      if (_logLines.length > 400) _logLines.splice(0, _logLines.length - 400);
+      console.log(s);
+      if (!_logDirty) { _logDirty = true; requestAnimationFrame(_flushLog); }
+    }
     function setStatus(t, ready) { statusEl.textContent = t;
       statusEl.setAttribute('data-ready', ready ? '1' : '0'); }
 
@@ -112,22 +139,32 @@
       if (typeof t === 'string' && t.includes('READY cmd=')) resolveReady();
     }
 
-    // Blit the BGRA result in the wasm heap (RES/LEN) into the canvas.
+    // Blit the BGRA result in the wasm heap (RES/LEN) into the canvas. This runs on
+    // the main thread on EVERY paint (now at full rate after the refresh-driver fix),
+    // so it's a hot path: profiled at ~20% of active CPU during a real load. Two
+    // structural wins over the naive byte loop: (1) swizzle B8G8R8A8 -> R8G8B8A8 a
+    // 32-bit WORD at a time (~4x fewer ops), and (2) reuse ONE ImageData instead of
+    // allocating WIDTH*HEIGHT*4 bytes per frame (kills the per-paint alloc + GC churn).
+    let _blitImg = null, _blitDst32 = null;
     function blit() {
       if (gpuMode) return 0;  // WebRender presents to the canvas directly; no CPU blit
       const u8 = mod.HEAPU8, i32 = mod.HEAP32;
       const resPtr = i32[(cmd + RES) >> 2], len = i32[(cmd + LEN) >> 2];
       if (!resPtr || !len) return 0;
-      const src = u8.subarray(resPtr, resPtr + len);
-      const img = ctx.createImageData(WIDTH, HEIGHT);
-      const d = img.data;
+      if (!_blitImg) { _blitImg = ctx.createImageData(WIDTH, HEIGHT); _blitDst32 = new Uint32Array(_blitImg.data.buffer); }
+      // resPtr is malloc'd (>=8-byte aligned) so a Uint32 view is safe. LE u32 of the
+      // engine's [B,G,R,A] bytes is B|G<<8|R<<16|A<<24; ImageData wants R|G<<8|B<<16|A<<24,
+      // so swap the B and R bytes and force alpha opaque.
+      const n = len >>> 2;
+      const src32 = new Uint32Array(u8.buffer, resPtr, n);
+      const dst = _blitDst32;
       let nonWhite = 0;
-      for (let i = 0; i + 3 < len; i += 4) {
-        const b = src[i], g = src[i + 1], r = src[i + 2];  // B8G8R8A8 -> RGBA
-        d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
-        if (r !== 255 || g !== 255 || b !== 255) nonWhite++;
+      for (let i = 0; i < n; i++) {
+        const p = src32[i];
+        dst[i] = ((p >>> 16) & 0xFF) | (p & 0x0000FF00) | ((p & 0xFF) << 16) | 0xFF000000;
+        if ((p & 0x00FFFFFF) !== 0x00FFFFFF) nonWhite++;
       }
-      ctx.putImageData(img, 0, 0);
+      ctx.putImageData(_blitImg, 0, 0);
       window.__lastRender = { nonWhite, w: WIDTH, h: HEIGHT };
       return nonWhite;
     }

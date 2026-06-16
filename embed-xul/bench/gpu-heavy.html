@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>gpu heavy</title>
+<style>
+.c{position:absolute;width:90px;height:90px;border-radius:14px;
+   box-shadow:0 8px 24px rgba(0,0,0,.4); mix-blend-mode:multiply;
+   background:linear-gradient(135deg,#f0f,#0ff); opacity:.85;}
+</style></head>
+<body style="margin:0;overflow:hidden;background:linear-gradient(#222,#446)">
+<div id="r"></div>
+<script>
+// GL-HEAVY continuous animation: 300 layered elements, each with a gradient +
+// box-shadow + blend mode + opacity (separate WebRender layers / many draw calls),
+// all moved every rAF. This maximizes per-frame GL draw calls -> the case where the
+// per-GL-call proxy-to-main tax should dominate (vs wikipedia's moderate scene).
+var r=document.getElementById('r'),b=[];
+for(var i=0;i<300;i++){var d=document.createElement('div');d.className='c';
+  d.style.filter='hue-rotate('+(i*7%360)+'deg)';r.appendChild(d);b.push(d);}
+var t=0;
+function f(){t+=0.025;
+  for(var i=0;i<b.length;i++){
+    var x=400+330*Math.cos(t*0.7+i*0.21), y=290+250*Math.sin(t+i*0.37);
+    b[i].style.transform='translate('+x+'px,'+y+'px) rotate('+(t*40+i)+'deg) scale('+(0.7+0.3*Math.sin(t+i))+')';
+  }
+  requestAnimationFrame(f);
+}
+requestAnimationFrame(f);
+</script>
+</body></html>

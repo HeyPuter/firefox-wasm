@@ -63,7 +63,8 @@ class CDP {
   const page = await browser.newPage();
   page.on('console', (m) => { const t = m.text(); if (process.env.VERBOSE && /\[(out|err)\]/.test(t)) console.error('  ', t.slice(0, 180)); });
 
-  const engineUrl = `http://127.0.0.1:${port}/index.html${gpu ? '?gpu=1' : ''}`;
+  const engineQs = (args.find((a) => a.startsWith('--engineqs=')) || '').split('=').slice(1).join('=');
+  const engineUrl = `http://127.0.0.1:${port}/index.html${gpu ? '?gpu=1' : '?'}${engineQs ? '&' + engineQs : ''}`;
   await page.goto(engineUrl, { waitUntil: 'load', timeout: 120000 });
   await page.waitForFunction(() => window.__geckoReady === true, { timeout: 180000 });
   console.error('[profile] engine READY; attaching CDP to all workers');
@@ -102,13 +103,21 @@ class CDP {
   await attached;
   console.error(`[profile] attached to ${profSessions.length} targets; starting profiler`);
 
-  for (const sid of profSessions) { try { await cdp.send('Profiler.start', {}, sid); } catch (e) {} }
-
-  // Trigger the action. A --url starting with '/' is served by THIS bench server
-  // (the engine fetches it over WISP), so resolve it against the local port.
+  // --settle=N: navigate FIRST, wait N ms (let the load + shader-compile finish),
+  // THEN start the profiler -- isolates steady-state (post-load) cost from the load.
+  const settleMs = +((args.find((a) => a.startsWith('--settle=')) || '').split('=')[1]) || 0;
   const loadUrl = url.startsWith('/') ? `http://127.0.0.1:${port}${url}` : url;
-  if (action === 'load') { await page.evaluate((u) => window.geckoRender(u), loadUrl); }
-  else if (action === 'micro') { await page.evaluate((p) => window.geckoRender(p), `http://127.0.0.1:${port}/bench/microjs.html`); }
+  const doNav = async () => {
+    if (action === 'load') { await page.evaluate((u) => window.geckoRender(u), loadUrl); }
+    else if (action === 'micro') { await page.evaluate((p) => window.geckoRender(p), `http://127.0.0.1:${port}/bench/microjs.html`); }
+  };
+  if (settleMs > 0) {
+    await doNav();
+    console.error(`[profile] settling ${settleMs}ms before profiling`);
+    await new Promise((r) => setTimeout(r, settleMs));
+  }
+  for (const sid of profSessions) { try { await cdp.send('Profiler.start', {}, sid); } catch (e) {} }
+  if (settleMs === 0) await doNav();
   console.error(`[profile] profiling ${action} for ${MS}ms`);
   await new Promise((r) => setTimeout(r, MS));
 
@@ -117,7 +126,11 @@ class CDP {
   // real CPU cost, not idle pool threads.
   const IDLE = new Set(['__timedwait_cp', 'emscripten_futex_wait', '(idle)',
     '__emscripten_thread_mailbox_await', '_emscripten_yield', 'pthread_cond_wait',
-    '__pthread_cond_timedwait', 'sched_yield']);
+    '__pthread_cond_timedwait', 'sched_yield',
+    // With select un-proxied, a worker blocked in select()'s Atomics.wait samples
+    // with leaf ___syscall__newselect — that's SLEEPING, not CPU. (Its real scan work
+    // runs on main as wisp_select_scan.) Exclude so percentages reflect real cost.
+    '___syscall__newselect', '__syscall__newselect']);
 
   // Stop profilers on all targets IN PARALLEL with a per-target timeout. A busy or
   // dead pthread worker can make Profiler.stop hang forever; don't let one stall the
@@ -162,7 +175,8 @@ class CDP {
         const SYNTH = (f) => !f || f === 'wasm-to-js' || f.startsWith('js-to-wasm') || f === '(garbage collector)';
         let id = leaf;
         while (id != null) {
-          if (fnOf(id) === callersOf) {
+          const f0 = fnOf(id);
+          if (f0 && f0.includes(callersOf)) {
             let pid = parent.get(id);
             while (pid != null && SYNTH(fnOf(pid))) pid = parent.get(pid);
             const cf = pid != null ? fnOf(pid) : '(root)';

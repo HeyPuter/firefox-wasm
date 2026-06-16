@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>webgl anim</title></head>
+<body style="margin:0;background:#000">
+<canvas id="gl" width="400" height="300"></canvas>
+<script>
+// Content WebGL canvas that animates its clear color every rAF frame. With glpass=1
+// this routes to a real host GL context. Tests that (a) content WebGL works and
+// (b) the gpu_present recomposite-skip gate doesn't FREEZE animating WebGL content
+// (the canvas redraw must invalidate the frame so WebRender recomposites).
+var c = document.getElementById('gl');
+var gl = c.getContext('webgl2') || c.getContext('webgl');
+window.__webglOk = !!gl;
+var t = 0;
+function frame() {
+  t += 0.02;
+  if (gl) {
+    gl.viewport(0, 0, c.width, c.height);
+    gl.clearColor(0.5 + 0.5 * Math.sin(t), 0.5 + 0.5 * Math.sin(t + 2), 0.5 + 0.5 * Math.sin(t + 4), 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body></html>
