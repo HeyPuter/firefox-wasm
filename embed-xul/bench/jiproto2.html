@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// run() MUTATES this.acc (-> Mode VS) AND calls this.step() (a method on the
+// PROTOTYPE -> GetProp now inlined in Mode VS, call_indirect to step). Tests
+// prototype-method GetProp inlining for soundness + speed.
+function Obj(){ this.acc = 0; }
+Obj.prototype.step = function(x){ return x + 1; };
+Obj.prototype.run = function(k){ for(var i=0;i<k;i++){ this.acc = this.acc + this.step(i); } return this.acc; };
+for(var w=0;w<400;w++){ var oo=new Obj(); oo.run(20); }   // warm to the JIT
+var c = new Obj();
+var r = c.run(10000);                 // sum(1..10000) = 50005000
+var corrOk = (c.acc === 50005000 && r === 50005000);
+var t=performance.now();
+var d=new Obj(); var r2=d.run(2000000);
+var ms=performance.now()-t;
+var corr2 = (d.acc === r2);
+document.title="PROTO corrOk="+corrOk+" corr2="+corr2+" acc="+c.acc+" protoms="+ms.toFixed(1);
+</script></body></html>

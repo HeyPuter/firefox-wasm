@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+function Pt(x,y){ this.x=x; this.y=y; }
+Pt.prototype.dot = function(){ return this.x*this.x + this.y*this.y; };
+function sumdots(p,n){ var s=0; for(var i=0;i<n;i++){ s += p.dot(); } return s; }
+var p = new Pt(3,4);
+for(var i=0;i<60;i++) sumdots(p,50);
+var ok1=(p.dot()===25), ok2=(sumdots(p,1000)===25000);
+var t=performance.now(); var r=sumdots(p,3000000); var ms=performance.now()-t;
+var ok=ok1&&ok2&&(r===75000000);
+document.title="PROTO ok="+ok+" dot="+p.dot()+" protoms="+ms.toFixed(1);
+</script></body></html>

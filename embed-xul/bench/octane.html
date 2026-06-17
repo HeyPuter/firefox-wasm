@@ -54,11 +54,18 @@ function post(obj) {
   BenchmarkSuite.config.doWarmup = undefined;
   BenchmarkSuite.config.doDeterministic = undefined;
   var t0 = Date.now();
+  function titleUpdate() {
+    var parts = [];
+    for (var k in results) parts.push(k + '=' + Math.round(results[k]));
+    var es = []; for (var k in errors) es.push(k);
+    document.title = 'OCT ' + parts.join(' ') + (es.length ? (' ERR=' + es.join(',')) : '');
+  }
   BenchmarkSuite.RunSuites({
-    NotifyResult: function (name, result) { results[name] = +result; logln(name + ': ' + result); },
-    NotifyError: function (name, error) { errors[name] = String(error); logln(name + ' ERROR ' + error); },
+    NotifyResult: function (name, result) { results[name] = +result; logln(name + ': ' + result); titleUpdate(); },
+    NotifyError: function (name, error) { errors[name] = String(error); logln(name + ' ERROR ' + error); titleUpdate(); },
     NotifyScore: function (score) {
       logln('SCORE ' + score);
+      document.title = 'OCTSCORE=' + Math.round(score) + ' ' + document.title.replace(/^OCT /, '');
       post({ bench: 'octane', files: files, score: +score, results: results, errors: errors,
              wallMs: Date.now() - t0, ua: navigator.userAgent });
     },

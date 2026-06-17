@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+function vsum(o,n){ var s=0; for(var i=0;i<n;i++){ s += o.x + o.y + o.z; } return s; }
+var OBJ={x:3,y:5,z:7};
+for(var i=0;i<300;i++) vsum(OBJ,50);
+var ok = (vsum(OBJ,1000)===15000);
+var t=performance.now();
+var vr=vsum(OBJ,5000000);
+var ms=performance.now()-t;
+ok = ok && (vr===75000000);
+document.title="VSUM ok="+ok+" vr="+vr+" vsumms="+ms.toFixed(1);
+</script></body></html>

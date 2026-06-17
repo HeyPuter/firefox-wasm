@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+function pset(o,v){ o.x=v; o.y=v+1; return o.x+o.y; }
+var O={x:0,y:0};
+for(var i=0;i<60;i++) pset(O,5);
+var ok1=(pset(O,7)===15);            // x=7,y=8 -> 15
+var ok2=(O.x===7 && O.y===8);        // object actually mutated correctly
+var t=performance.now(), s=0;
+for(var k=0;k<2000000;k++){ s=pset(O,3); }
+var ms=performance.now()-t;
+var ok=ok1&&ok2&&(s===7)&&(O.x===3&&O.y===4);
+document.title="SP ok="+ok+" ox="+O.x+" oy="+O.y+" setpropms="+ms.toFixed(1);
+</script></body></html>

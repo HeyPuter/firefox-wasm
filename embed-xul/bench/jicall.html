@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+function sq(x){ return x*x; }
+function applyloop(f,n){ var s=0; for(var i=0;i<n;i++){ s += f(i); } return s; }
+for(var i=0;i<60;i++) applyloop(sq,50);
+var ok1=(applyloop(sq,1000)===332833500);   // sum(i^2,0..999)
+var t=performance.now(), r=0;
+for(var k=0;k<3000;k++){ r=applyloop(sq,1000); }
+var ms=performance.now()-t;
+var ok=ok1&&(r===332833500);
+document.title="CALL ok="+ok+" r="+r+" callms="+ms.toFixed(1);
+</script></body></html>

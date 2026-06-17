@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+var o = { x:3, y:4, dot: function(){ return this.x*this.x + this.y*this.y; } };
+function sumdots(ob,n){ var s=0; for(var i=0;i<n;i++){ s += ob.dot(); } return s; }
+for(var i=0;i<60;i++) sumdots(o,50);
+var ok1=(o.dot()===25), ok2=(sumdots(o,1000)===25000);
+var t=performance.now(); var r=sumdots(o,3000000); var ms=performance.now()-t;
+var ok=ok1&&ok2&&(r===75000000);
+document.title="METH ok="+ok+" dot="+o.dot()+" methms="+ms.toFixed(1);
+</script></body></html>

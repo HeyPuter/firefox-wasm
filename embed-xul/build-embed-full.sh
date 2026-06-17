@@ -93,7 +93,7 @@ EMSETTINGS=(
   -sPTHREAD_POOL_SIZE_STRICT=0     # still allow on-demand (works in node; browser relies on pool)
   -sMODULARIZE=1
   -sEXPORT_NAME=createGecko
-  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wasmhost_invoke_import
+  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency
   -lidbfs.js                       # IndexedDB-backed FS so the chrome build can mount
                                    # a persistent profile dir (FS.syncfs); inert unless

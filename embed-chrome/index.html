@@ -39,6 +39,13 @@
 <body>
   <canvas id="screen" width="1280" height="800" tabindex="0"></canvas>
   <canvas id="popups" width="1280" height="800"></canvas>
+  <!-- GPU mode (?gpu=1): emscripten's PROXY_TO_PTHREAD app thread is spawned with a
+       "transfer the default OffscreenCanvas" attr, so OFFSCREENCANVASES_TO_PTHREAD
+       (=#gldummy in build-embed-full.sh) must name a canvas that EXISTS or startup
+       aborts with "could not find canvas #gldummy". This throwaway 1x1 canvas absorbs
+       that transfer; the engine transfers #screen to the WebRender Renderer thread and
+       presents to an auto-created #glout overlay (see gecko.js / GLContextProviderEmscripten). -->
+  <canvas id="gldummy" width="1" height="1" style="display:none"></canvas>
 
   <div id="loader">
     <div id="brand">Firefox (libxul) → WebAssembly</div>
@@ -79,6 +86,10 @@
     // WebGL2 context created inside the engine, so the page must NOT grab a 2D
     // context (a canvas can only have one context) and must not software-blit.
     const gpuMode = new URLSearchParams(location.search).has('gpu');
+    // ?glpass=1 -> route content canvas.getContext('webgl'/'webgl2') to a real host
+    // WebGL context (passthrough) composited into the scene. Needs the engine flag
+    // GECKO_GL_PASSTHROUGH (set in preRun); without it content reports WebGL unsupported.
+    const glPassMode = new URLSearchParams(location.search).has('glpass');
     const ctx = gpuMode ? null : canvas.getContext('2d');
     const enc = new TextEncoder();
     // GPU mode: a 2D overlay canvas stacked over the WebGL #screen, onto which the
@@ -422,6 +433,8 @@
         // Opt in to GPU compositing (in-process WebRender -> WebGL2 -> this
         // <canvas>). Gated so the default software path is unchanged.
         if (gpuMode) m.ENV['GECKO_GPU'] = '1';
+        // Content WebGL passthrough to a real host GL context (?glpass=1).
+        if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
         const mozlog = new URLSearchParams(location.search).get('mozlog');
         if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
         if (wispUrl && typeof WISP !== 'undefined') {

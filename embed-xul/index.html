@@ -624,6 +624,8 @@
           const sp = new URLSearchParams(location.search);
           const stylo = sp.get('stylo');
           if (stylo) m.ENV['GECKO_STYLO_THREADS'] = stylo;
+          // JS->wasm JIT is OFF by default; ?jit=1 enables it.
+          if (sp.get('jit') === '1') m.ENV['GECKO_WASMJIT'] = '1';
           for (const [k, v] of sp) if (k.startsWith('env.')) m.ENV[k.slice(4)] = v;
           if (wispUrl && typeof WISP !== 'undefined') {
             WISP.install(m, wispUrl);

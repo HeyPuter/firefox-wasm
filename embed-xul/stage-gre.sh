@@ -40,6 +40,12 @@ if [ -z "$(ls -A "$DST/fonts" 2>/dev/null)" ]; then
   exit 1
 fi
 echo "staged $(ls "$DST/fonts" | wc -l) font(s) -> $DST/fonts"
+# The full-chrome build (embed-chrome) runs with binDir = /gre/browser (GRE/APP
+# split), so FindFonts scans <process dir>/fonts = /gre/browser/fonts, NOT /gre/fonts.
+# Seed that dir too or the chrome build crashes 'No font files found' at startup.
+mkdir -p "$DST/browser/fonts"
+cp "$FONTSRC"/*.ttf "$DST/browser/fonts/" 2>/dev/null || true
+echo "staged $(ls "$DST/browser/fonts" | wc -l) font(s) -> $DST/browser/fonts"
 
 echo "staged GRE resources -> $DST"
 du -sh "$DST"

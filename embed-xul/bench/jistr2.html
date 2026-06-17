@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// strwork has an INTERNAL LOOP (so it warms up via LoopHead -> JITs). It's non-mutating
+// + call-free, so the in-loop string concat deopts Mode V -> forceVS -> Mode VS, whose
+// frame is GC-traced. Heavy allocation (a fresh string every iteration) forces GCs while
+// Mode VS holds string Values in its frame. Exact total + no crash => GC-safe; the
+// VS-string-ops heartbeat counter > 0 => the work actually ran JIT'd in Mode VS.
+function strwork(M){
+  var total = 0;
+  for (var i = 0; i < M; i++){
+    var s = "item_" + (i % 1000);     // string+number concat -> AddValues (allocates)
+    total += s.length;                // string .length
+    if (s === "item_500") total += 1; // content === (StrictlyEqual)
+  }
+  return total;
+}
+var grand = 0;
+var t0 = performance.now();
+for (var k = 0; k < 3000; k++){ grand += strwork(10000); }  // 3000 JIT entries, > 4s
+var ms = performance.now() - t0;
+// strwork(10000): 10 blocks of 1000 -> 10*7891 = 78910; grand = 3000*78910
+var expected = 3000 * 78910;          // = 236730000
+document.title = "STR2 ok=" + (grand === expected) + " grand=" + grand +
+                 " exp=" + expected + " ms=" + ms.toFixed(0);
+</script></body></html>

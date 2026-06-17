@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// Mode VS soundness test: o.x is incremented n times per call (read-modify-write).
+// The old mutation-gate refused to compile this; a deopt-by-restart JIT would
+// double-count. Mode VS (no-restart) must give exactly-once results.
+function bump(o,n){ for(var i=0;i<n;i++){ o.x = o.x + 1; } return o.x; }
+// Warm up past the JIT threshold; the later warm calls run as Mode VS wasm and
+// mutate W.x -- double execution would push W.x above 2000.
+var W={x:0};
+for(var i=0;i<200;i++){ bump(W, 10); }
+var warmOk = (W.x === 2000);
+// Correctness on a fresh object with a known expected count.
+var C={x:0};
+var cr = bump(C, 100000);
+var corrOk = (cr === 100000 && C.x === 100000);
+// Timing + a big single JIT'd run.
+var T={x:0};
+var t=performance.now();
+var tr=bump(T, 5000000);
+var ms=performance.now()-t;
+var timeOk = (tr === 5000000 && T.x === 5000000);
+document.title="SETP warmOk="+warmOk+" corrOk="+corrOk+" timeOk="+timeOk
+  +" cr="+cr+" Tx="+T.x+" bumpms="+ms.toFixed(1);
+</script></body></html>

@@ -79,7 +79,9 @@ mergeInto(LibraryManager.library, {
     var r = globalThis.__whReg[h];
     if (!r || r.memObjId < 0) return;
     var mem = globalThis.__whObj[r.memObjId];
-    var mir = globalThis.__whObjMirror[r.memObjId];
+    // A JIT module imports the guest's own memory and has NO mirror (it shares
+    // the guest ArrayBuffer): nothing to copy, and __whObjMirror may be unset.
+    var mir = globalThis.__whObjMirror && globalThis.__whObjMirror[r.memObjId];
     if (!mem || !mir) return;
     var hb = new Uint8Array(mem.buffer);
     var n = mir.len < hb.length ? mir.len : hb.length;
@@ -116,6 +118,23 @@ mergeInto(LibraryManager.library, {
         var imp = r.imports[i];
         if (!hostImports[imp.module]) hostImports[imp.module] = {};
         var id = HEAP32[(callbackIdsPtr >> 2) + i];
+        if (id === -2) {
+          // JS->wasm JIT call dispatch: a JIT module's "m"."call" import re-enters
+          // C++ to invoke the cached callee's wasm (args already in gWJScratch).
+          hostImports[imp.module][imp.name] = function (site, argc) {
+            return Module._wasmjit_invoke(site, argc);
+          };
+          continue;
+        }
+        if (id === -3) {
+          // Mode VS no-restart helper: a JIT module's "m"."help" import re-enters
+          // C++ to complete one op (operands in gWJHelp*; shares the guest heap, so
+          // no whSyncMem). Returns 0 ok / 1 threw / (engine may grow guest memory).
+          hostImports[imp.module][imp.name] = function (kind, site) {
+            return Module._wjhelp(kind, site);
+          };
+          continue;
+        }
         if (id < 0) continue;
         if (imp.kind === 'function') {
           hostImports[imp.module][imp.name] = shimFor(id, h);
@@ -241,5 +260,60 @@ mergeInto(LibraryManager.library, {
   wasmhost_obj_set_mirror: function (id, ptr, len) {
     var reg = globalThis.__whObjMirror || (globalThis.__whObjMirror = {});
     reg[id] = { ptr: ptr, len: len };
+  },
+
+  // ---- JS->wasm JIT support --------------------------------------------------
+  // Register the GUEST's own linear memory (emscripten's wasmMemory) into the
+  // object registry so a JIT-compiled host module can IMPORT it and read/write
+  // the guest heap directly (a JSObject* is just a wasm32 memory offset). No
+  // mirror is recorded for it, so whSyncMem is a no-op for such modules: the
+  // host module shares the guest ArrayBuffer rather than copying. Returns the
+  // obj id (-1 if the guest memory object is unreachable here).
+  wasmhost_guest_mem_objid: function () {
+    if (globalThis.__whGuestMemId !== undefined) return globalThis.__whGuestMemId;
+    var mem = (typeof wasmMemory !== 'undefined' && wasmMemory) ? wasmMemory
+            : (typeof Module !== 'undefined' && Module.wasmMemory) ? Module.wasmMemory
+            : null;
+    if (!mem || !mem.buffer) { globalThis.__whGuestMemId = -1; return -1; }
+    var reg = globalThis.__whObj || (globalThis.__whObj = []);
+    var id = reg.length; reg.push(mem);
+    globalThis.__whGuestMemId = id;
+    return id;
+  },
+  // Shared funcref table for JS->wasm JIT calls: every compiled JIT function's
+  // export is placed in this table, so a JIT'd caller can `call_indirect` a
+  // callee's wasm DIRECTLY (native, no JS/C++ bridge hop) -- this is what makes
+  // calls (and recursion) fast. Created once; returns its obj id (-1 on failure).
+  wasmhost_jit_table: function () {
+    if (globalThis.__whJitTableId !== undefined) return globalThis.__whJitTableId;
+    try {
+      var t = new WebAssembly.Table({ element: 'anyfunc', initial: 4096 });
+      var reg = globalThis.__whObj || (globalThis.__whObj = []);
+      var id = reg.length; reg.push(t);
+      globalThis.__whJitTableId = id;
+      return id;
+    } catch (e) {
+      console.error('[wasm-host] jit_table failed:', e && e.message ? e.message : e);
+      globalThis.__whJitTableId = -1; return -1;
+    }
+  },
+  // Put compiled module `h`'s exported function into the shared table at `idx`.
+  wasmhost_jit_table_set: function (h, idx) {
+    var tid = globalThis.__whJitTableId;
+    if (tid === undefined || tid < 0) return -1;
+    var t = globalThis.__whObj[tid];
+    var r = globalThis.__whReg && globalThis.__whReg[h];
+    if (!t || !r || !r.fns || !r.fns[0]) return -1;
+    try { t.set(idx, r.fns[0]); return 0; } catch (e) { return -1; }
+  },
+
+  // 1 if the guest memory is backed by a SharedArrayBuffer (the JIT module must
+  // then declare its imported memory as shared, with a max), 0 otherwise.
+  wasmhost_guest_mem_shared: function () {
+    var mem = (typeof wasmMemory !== 'undefined' && wasmMemory) ? wasmMemory
+            : (typeof Module !== 'undefined' && Module.wasmMemory) ? Module.wasmMemory
+            : null;
+    return (mem && mem.buffer && typeof SharedArrayBuffer !== 'undefined' &&
+            (mem.buffer instanceof SharedArrayBuffer)) ? 1 : 0;
   },
 });

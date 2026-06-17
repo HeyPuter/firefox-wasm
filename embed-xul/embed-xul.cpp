@@ -323,6 +323,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       mozilla::Preferences::SetBool("browser.tabs.remote.force-enable", false);
       // WebExtensions also have no separate process here -> run them in-process.
       mozilla::Preferences::SetBool("extensions.webextensions.remote", false);
+      // Don't reject add-ons whose strict_max_version is below our app version
+      // (153.0a1). AddonManager defaults gCheckCompatibility=true and reads
+      // extensions.checkCompatibility.nightly (our build is a1 -> NIGHTLY_BUILD);
+      // real Nightly sets this false in its default prefs so add-ons aren't blocked
+      // by maxVersion, but we don't ship those, so installs failed with
+      // addon-install-error-incompatible. Must be set BEFORE addons-startup below.
+      mozilla::Preferences::SetBool("extensions.checkCompatibility.nightly", false);
+      // Don't require signed add-ons. We also skip the signature *verification* step
+      // (XPIInstall shouldVerifySignedState) because the async NSS verifier
+      // (openSignedAppFileAsync) never completes in this wasm build -> install hangs
+      // forever at "Verifying". This pref keeps the requirement consistent with that.
+      mozilla::Preferences::SetBool("xpinstall.signatures.required", false);
       printf("xul_init: forced non-remote tabs + extensions (single process)\n");
       fflush(stdout);
     }
@@ -387,6 +399,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       mozilla::Preferences::SetBool("gfx.webrender.panic-on-gl-error", false);
       printf("xul_init: GECKO_GPU -> forced hardware WebRender prefs\n");
       fflush(stdout);
+    } else {
+      // Software (non-GPU) mode paints via xul_paint (RenderDocument) and blits to
+      // #screen through a 2D context. The compositor must therefore NOT create a
+      // hardware GL context: CreateForCompositorWidget targets #screen and would call
+      // transferControlToOffscreen(#screen), which throws InvalidStateError because
+      // #screen already has a 2D rendering context. Our gfxPlatform patch enables
+      // HW_COMPOSITING even headless (for GPU mode), so without this the compositor
+      // goes hardware here too. Force software WebRender (SWGL) -> no GL context on
+      // #screen. (SWGL never presents in this mode; RenderDocument is the paint path.)
+      mozilla::Preferences::SetBool("gfx.webrender.software", true);
+      printf("xul_init: no GECKO_GPU -> forced software WebRender (SWGL)\n");
+      fflush(stdout);
     }
 
     // Smooth scrolling: animated over several refresh-driver ticks. With the GPU
@@ -398,6 +422,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // shows it in focused inputs -- a blinking caret would be invisible ~half the
     // time. Paired with RenderDocumentFlags::DrawCaret in xul_paint.
     mozilla::Preferences::SetInt("ui.caretBlinkTime", 0);
+    // Disable the slow-script watchdog ("a web page is slowing down your browser").
+    // This is a JIT-less interpreter-only wasm build, so content scripts routinely
+    // exceed the 10s/5s defaults and trip the notification. 0 == no limit (same as
+    // the chrome default dom.max_chrome_script_run_time=0). Live StaticPrefs.
+    mozilla::Preferences::SetInt("dom.max_script_run_time", 0);
+    mozilla::Preferences::SetInt("dom.max_ext_content_script_run_time", 0);
     // Top-level data: URL navigations are blocked by default (anti-phishing),
     // which silently aborts our LoadURI(data:...) -> the doc never leaves
     // about:blank. Allow them for this embedding.
@@ -1010,30 +1040,46 @@ static int composite_visible_popups(gfxContext* ctx, mozilla::PresShell* ps,
   if (!pm) return 0;
   nsTArray<nsMenuPopupFrame*> popups;
   pm->GetVisiblePopups(popups);
+
+  // The headless popup widget never sizes the popup frame, so a freshly-shown
+  // popup comes up 0-sized; give it the window's inline size, force an intrinsic
+  // reflow, then position it. CRITICAL: FlushPendingNotifications can run reflow
+  // and script that DESTROYS popup frames, so we must NOT hold the raw
+  // nsMenuPopupFrame* (or any entry of `popups`) across a flush -- that was a
+  // use-after-free that slowly corrupted memory. Re-query GetVisiblePopups after
+  // every flush, and keep the paint pass below flush-free.
+  bool sized = false;
+  for (auto* pf : popups) {
+    if (!pf) continue;
+    LayoutDeviceIntRect b = pf->CalcWidgetBounds();
+    if (b.width <= 0 || b.height <= 0) {
+      pf->SetSize(nsSize(width * appPerCss, height * appPerCss));
+      ps->FrameNeedsReflow(pf, mozilla::IntrinsicDirty::FrameAncestorsAndDescendants,
+                           NS_FRAME_IS_DIRTY);
+      sized = true;
+    }
+  }
+  if (sized) {
+    if (Document* d = ps->GetDocument())
+      d->FlushPendingNotifications(mozilla::FlushType::Layout);
+    popups.Clear();
+    pm->GetVisiblePopups(popups);  // the flush may have destroyed frames
+    for (auto* pf : popups)
+      if (pf) pf->SetPopupPosition(false);
+    if (Document* d = ps->GetDocument())
+      d->FlushPendingNotifications(mozilla::FlushType::Layout);
+    popups.Clear();
+    pm->GetVisiblePopups(popups);  // re-query once more before painting
+  }
+
+  // Paint pass: no flushes here, so the frame pointers stay valid for its
+  // duration. GetVisiblePopups is top-to-bottom; paint back-to-front so the
+  // topmost wins.
   int painted = 0;
-  // GetVisiblePopups is top-to-bottom; paint back-to-front so the topmost wins.
   for (size_t i = popups.Length(); i-- > 0;) {
     nsMenuPopupFrame* pf = popups[i];
     if (!pf) continue;
     LayoutDeviceIntRect b = pf->CalcWidgetBounds();
-    if (b.width <= 0 || b.height <= 0) {
-      // The headless popup widget never sizes the popup frame, so PresShell::
-      // DoReflow hands the popup reflow root a 0 available inline size and its
-      // content collapses. Give the frame the window's inline size as available
-      // width, force a fresh intrinsic reflow, then size/position to content.
-      // Self-limiting: once sized, CalcWidgetBounds is non-zero and this is
-      // skipped. (Pairs with RefreshScreen, which gives GetConstraintRect a real
-      // screen so the result isn't re-clamped to zero.)
-      pf->SetSize(nsSize(width * appPerCss, height * appPerCss));
-      ps->FrameNeedsReflow(pf, mozilla::IntrinsicDirty::FrameAncestorsAndDescendants,
-                           NS_FRAME_IS_DIRTY);
-      if (Document* d3 = ps->GetDocument())
-        d3->FlushPendingNotifications(mozilla::FlushType::Layout);
-      pf->SetPopupPosition(false);
-      if (Document* d3 = ps->GetDocument())
-        d3->FlushPendingNotifications(mozilla::FlushType::Layout);
-      b = pf->CalcWidgetBounds();
-    }
     if (b.width <= 0 || b.height <= 0) continue;
     gfxContextMatrixAutoSaveRestore saveMatrix(ctx);
     ctx->SetMatrix(Matrix::Translation((float)b.x, (float)b.y));

@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// Pure-numeric hot loop -- Mode N's sweet spot: the whole loop runs in one wasm call
+// (boundary paid ONCE), operands are unboxed f64 in wasm locals (no boxing, no shape
+// guards, no helpers), and interpreter dispatch is eliminated. This is where the JIT
+// is SUPPOSED to win big. Compare ON vs OFF (GECKO_NOWASMJIT) to see the speedup.
+function work(n){ var s=0; for(var i=0;i<n;i++){ s = s + i*2 - i + (i*i); } return s; }
+
+for(var w=0;w<80;w++){ work(50000); }            // warm to the JIT
+var t=performance.now();
+var acc=0;
+for(var k=0;k<400;k++){ acc += work(50000); }     // 20M iterations
+var ms=performance.now()-t;
+document.title="NUM ms="+ms.toFixed(1)+" acc="+acc;
+</script></body></html>
