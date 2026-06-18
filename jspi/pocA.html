@@ -1,0 +1,37 @@
+<!doctype html><html><head><meta charset="utf-8"><title>JSPI PoC A</title></head>
+<body><pre id="log"></pre>
+<script src="pocA.js"></script>
+<script>
+window.__log = [];
+const logEl = document.getElementById('log');
+function L(s) { window.__log.push(String(s)); logEl.textContent += s + '\n'; try { console.log(s); } catch (e) {} }
+
+createPocA({
+  print: L, printErr: L,
+  // Custom instantiation: wrap the poc_sleep import as SUSPENDING and the poc_run
+  // export as PROMISING, using the native JSPI JS API (no -sASYNCIFY / wasm-opt).
+  instantiateWasm: function (info, receive) {
+    // emscripten passes the import object; poc_sleep lives under env (or flat).
+    const env = info.env || info;
+    if (typeof env.poc_sleep !== 'function') { L('[js] ERR: poc_sleep import missing'); }
+    env.poc_sleep = new WebAssembly.Suspending(env.poc_sleep);
+    fetch('pocA.wasm').then((r) => r.arrayBuffer()).then((buf) => WebAssembly.instantiate(buf, info))
+      .then(({ instance, module }) => {
+        const ex = instance.exports;
+        const run = ex.poc_run || ex._poc_run;
+        window.__pocRun = WebAssembly.promising(run);
+        receive(instance, module);
+      }).catch((e) => { L('[js] instantiate error: ' + e); window.__err = String(e); });
+    return {}; // signal async instantiation
+  },
+}).then(async (M) => {
+  L('[js] module ready; calling promising poc_run(3)');
+  const t0 = performance.now();
+  try {
+    const rv = await window.__pocRun(3);
+    const dt = Math.round(performance.now() - t0);
+    L('[js] poc_run RESOLVED rv=' + rv + ' elapsed=' + dt + 'ms (expect ~120ms if it truly suspended)');
+    window.__done = { rv, dt };
+  } catch (e) { L('[js] poc_run threw: ' + e); window.__err = String(e); }
+}).catch((e) => { L('[js] module error: ' + e); window.__err = String(e); });
+</script></body></html>

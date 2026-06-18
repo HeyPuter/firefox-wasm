@@ -7,8 +7,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="$HERE/../obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="${OBJ}-release"
+# ST=1 (experimental single-threaded) stages from its own objdir into a separate
+# gre-stage-st/ so it never disturbs the threaded build's staging.
+DSTSUFFIX=""
+if [ "${GECKO_STJ:-}" = "1" ]; then OBJ="$HERE/../obj-full-emscripten-stj"; DSTSUFFIX="-stj";
+elif [ "${GECKO_ST:-}" = "1" ]; then OBJ="$HERE/../obj-full-emscripten-st"; DSTSUFFIX="-st"; fi
 SRC="$OBJ/dist/bin"
-DST="$HERE/gre-stage"
+DST="$HERE/gre-stage$DSTSUFFIX"
 
 # WARNING: gre-stage/ is REGENERATED from scratch on every run (rm -rf below), so
 # anything hand-edited here is silently lost on the next build. Do NOT edit staged

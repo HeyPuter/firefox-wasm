@@ -1,0 +1,1 @@
+../embed-xul/jspi-sched.js

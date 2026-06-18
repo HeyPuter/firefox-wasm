@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><title>JSPI PoC F: full fiber runtime, no SAB</title></head>
+<body><pre id="log"></pre>
+<script>
+window.__log = []; const el = document.getElementById('log');
+function L(s) { window.__log.push(String(s)); el.textContent += s + '\n'; try { console.log(s); } catch (e) {} }
+function patchNonShared(b) {
+  let o = 8; const rd = () => { let r = 0, s = 0, x; do { x = b[o++]; r |= (x & 0x7f) << s; s += 7; } while (x & 0x80); return r >>> 0; };
+  while (o < b.length) { const id = b[o++]; const sz = rd(); const st = o;
+    if (id === 5) { let p = o; const r2 = () => { let r = 0, s = 0, x; do { x = b[p++]; r |= (x & 0x7f) << s; s += 7; } while (x & 0x80); return r >>> 0; };
+      r2(); if (b[p] & 2) { b[p] &= ~2; return true; } return false; } o = st + sz; }
+  return false;
+}
+let INST = null;
+const SUSPENDING = ['stj_join', 'stj_yield_', 'stj_mutex_lock', 'stj_cond_wait', 'stj_sem_wait'];
+</script>
+<script src="jspi-sched.js"></script>
+<script src="pocF.js"></script>
+<script>
+createPocF({
+  print: L, printErr: L,
+  instantiateWasm: function (info, receive) {
+    const env = info.env || info;
+    SUSPENDING.forEach((n) => { if (typeof env[n] === 'function') env[n] = new WebAssembly.Suspending(env[n]); });
+    fetch('pocF.wasm').then((r) => r.arrayBuffer()).then((ab) => {
+      const bytes = new Uint8Array(ab); L('patched non-shared: ' + patchNonShared(bytes));
+      return WebAssembly.instantiate(bytes, info);
+    }).then(({ instance, module }) => {
+      INST = instance;
+      // TLS setup BEFORE ctors run: place the active base, snapshot the initial template.
+      const ex = instance.exports;
+      const size = ex.stj_tls_size();
+      const base = ex.malloc(size || 8);
+      ex.__wasm_init_tls(base);
+      const template = new Uint8Array(ex.memory.buffer).slice(base, base + size);
+      window.__stjOpts = { base, size, template };
+      receive(instance, module);
+    }).catch((e) => { L('instantiate err ' + e); window.__err = String(e); });
+    return {};
+  },
+}).then((M) => {
+  L('crossOriginIsolated=' + self.crossOriginIsolated + ' SAB=' + (typeof SharedArrayBuffer) + ' buffer=' + INST.exports.memory.buffer.constructor.name);
+  M.__STJ = makeSTJScheduler(INST.exports, window.__stjOpts, L);
+  L('[js] booting main fiber...');
+  M.__STJ.boot().then(() => {
+    const rv = M.__STJ.fibers[0].retval;
+    L('[js] boot done; main fiber retval=0x' + (rv >>> 0).toString(16));
+    window.__done = { rv: rv >>> 0, coi: self.crossOriginIsolated, sab: typeof SharedArrayBuffer };
+  });
+}).catch((e) => { L('module err ' + e); window.__err = String(e); });
+</script></body></html>

@@ -25,15 +25,29 @@ MOZBUILD_STATE_PATH ?= $(HOME)/.mozbuild
 # RELEASE=1 turns on optimizations: --enable-lto for the engine (mozconfig) and
 # -O3 at the emcc relink so wasm-opt's passes run over the final module.
 RELEASE             ?=
+# ST=1 builds an EXPERIMENTAL single-threaded engine: NO emscripten pthreads
+# anywhere (no -pthread, no Rust build-std +atomics, no PROXY_TO_PTHREAD). It uses
+# its OWN objdir (obj-full-emscripten-st) so it never disturbs the threaded cache,
+# and ST takes precedence over RELEASE (the experiment is a debug build).
+ST                  ?=
+# STJ=1 (single-threaded JSPI) builds the engine with the wasm atomics TLS segment
+# (-matomics, build-std +atomics) but NO -pthread: it runs on ONE OS thread with JSPI
+# cooperative fibers and per-fiber TLS via region save/restore, NO SharedArrayBuffer
+# (the final embedder link adds --shared-memory to emit the TLS segment, then patches
+# the memory non-shared). Own objdir obj-full-emscripten-stj. See [[singlethread-tls]].
+STJ                 ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH
 export GECKO_RELEASE := $(RELEASE)
+export GECKO_ST := $(ST)
+export GECKO_STJ := $(STJ)
 
-# Engine build output (RELEASE uses its own objdir, matching the mozconfig + embed
-# scripts). `web` keys off libxul existing to decide whether a first build is needed.
-OBJDIR := $(ROOT)/obj-full-emscripten$(if $(RELEASE),-release)
+# Engine build output (RELEASE/ST/STJ each use their own objdir, matching the mozconfig
+# + embed scripts). `web` keys off libxul existing to decide whether a first build
+# is needed. STJ wins over ST wins over RELEASE.
+OBJDIR := $(ROOT)/obj-full-emscripten$(if $(STJ),-stj,$(if $(ST),-st,$(if $(RELEASE),-release)))
 LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 
-.PHONY: all release firefox vendor configure build web run clean distclean
+.PHONY: all release single firefox vendor configure build web run clean distclean
 
 all: web
 
@@ -41,6 +55,13 @@ all: web
 # mozconfig (--enable-lto), which forces a full reconfigure + rebuild of libxul.
 release:
 	$(MAKE) all RELEASE=1
+
+# Experimental single-threaded engine + node embedder (see ST above). This is a
+# probe: build the whole engine with zero pthreads in obj-full-emscripten-st, then
+# link a node smoke embedder (embed-xul/build-embed-st.sh) and run it.
+single:
+	$(MAKE) build ST=1
+	ST=1 bash embed-xul/build-embed-st.sh
 
 # Pinned shallow clone. GitHub serves arbitrary reachable SHAs, so we fetch the
 # exact commit at depth 1 (no submodule, no full history). The firefox/.git guard

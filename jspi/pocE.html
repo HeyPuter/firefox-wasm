@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><title>JSPI PoC E: fibers + per-fiber TLS, no SAB</title></head>
+<body><pre id="log"></pre>
+<script>
+window.__log = []; const el = document.getElementById('log');
+function L(s) { window.__log.push(String(s)); el.textContent += s + '\n'; try { console.log(s); } catch (e) {} }
+// Flip the internal memory's shared flag off (limits 0x03 -> 0x01) so it instantiates
+// without SAB.
+function patchNonShared(b) {
+  let o = 8; const rd = () => { let r = 0, s = 0, x; do { x = b[o++]; r |= (x & 0x7f) << s; s += 7; } while (x & 0x80); return r >>> 0; };
+  while (o < b.length) { const id = b[o++]; const sz = rd(); const st = o;
+    if (id === 5) { let p = o; const r2 = () => { let r = 0, s = 0, x; do { x = b[p++]; r |= (x & 0x7f) << s; s += 7; } while (x & 0x80); return r >>> 0; };
+      r2(); if (b[p] & 2) { b[p] &= ~2; return true; } return false; } o = st + sz; }
+  return false;
+}
+let INST = null;
+</script>
+<script src="pocE.js"></script>
+<script>
+createPocE({
+  print: L, printErr: L,
+  instantiateWasm: function (info, receive) {
+    const env = info.env || info;
+    env.st_join = new WebAssembly.Suspending(env.st_join);   // make join suspend the fiber
+    fetch('pocE.wasm').then((r) => r.arrayBuffer()).then((ab) => {
+      const bytes = new Uint8Array(ab);
+      L('patched memory non-shared: ' + patchNonShared(bytes));
+      return WebAssembly.instantiate(bytes, info);
+    }).then(({ instance, module }) => { INST = instance; receive(instance, module); })
+      .catch((e) => { L('instantiate err: ' + e); window.__err = String(e); });
+    return {};
+  },
+}).then((M) => {
+  L('crossOriginIsolated=' + self.crossOriginIsolated + ' SharedArrayBuffer=' + (typeof SharedArrayBuffer));
+  const ex = INST.exports;
+  const size = ex.st_tls_size();
+  const block = ex.malloc(size);
+  ex.__wasm_init_tls(block);                 // active TLS base -> block, template copied in
+  const base = block;
+  const heap = () => new Uint8Array(ex.memory.buffer);
+  const template = heap().slice(base, base + size);
+  const promisingStart = WebAssembly.promising(ex.st_fiber_start);
+  L('tls_size=' + size + ' base=' + base + ' &tls_v=' + ex.st_tls_addr() + ' buffer=' + ex.memory.buffer.constructor.name);
+
+  const S = {
+    fibers: { 0: { id: 0, tls: null, started: true, done: false, joiners: [], resume: null } },
+    nextId: 1, current: 0, runQ: [], running: false,
+    saveCur() { const f = S.fibers[S.current]; if (f) f.tls = heap().slice(base, base + size); },
+    restore(f) { if (f.tls) heap().set(f.tls, base); },
+    enqueue(start, arg) {
+      const id = S.nextId++;
+      S.fibers[id] = { id, start, arg, tls: template.slice(), started: false, done: false, joiners: [], resume: null };
+      S.runQ.push(id); S.pump(); return id;
+    },
+    join(id) {
+      const t = S.fibers[id]; if (!t || t.done) return Promise.resolve();
+      return new Promise((res) => { S.saveCur(); S.fibers[S.current].resume = res; t.joiners.push(S.current); S.running = false; queueMicrotask(S.pump); });
+    },
+    pump() {
+      if (S.running || S.runQ.length === 0) return;
+      const id = S.runQ.shift(); const f = S.fibers[id];
+      S.running = true; S.current = id; S.restore(f);
+      if (!f.started) { f.started = true; promisingStart(f.start, f.arg).then(() => S.done(f)).catch((e) => { L('fiber ' + id + ' threw ' + e); S.done(f); }); }
+      else { const r = f.resume; f.resume = null; if (r) r(); }
+    },
+    done(f) { f.done = true; S.running = false; S.current = 0; f.joiners.forEach((j) => S.runQ.push(j)); f.joiners = []; queueMicrotask(S.pump); },
+  };
+  M.__sched = S;
+
+  S.running = true;                          // main fiber (0) is running; pthread_create won't run worker until main yields
+  const runTest = WebAssembly.promising(ex.run_test);
+  L('[js] running promising run_test()');
+  runTest().then((rv) => { L('[js] run_test resolved rv=' + rv + ' (expect 7)'); window.__done = { rv, coi: self.crossOriginIsolated, sab: typeof SharedArrayBuffer }; })
+           .catch((e) => { L('[js] run_test threw ' + e); window.__err = String(e); });
+}).catch((e) => { L('module err: ' + e); window.__err = String(e); });
+</script></body></html>

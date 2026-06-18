@@ -1,0 +1,102 @@
+<!doctype html>
+<!-- EXPERIMENTAL single-threaded (ST=1) Gecko-wasm harness.
+     No pthreads: main() inits then runs emscripten_set_main_loop(st_tick); this page
+     drives navigation/input through the st_load/st_mouse/st_key/st_wheel ccall entry
+     points (synchronous, same thread). The C side software-paints straight to
+     #screen, so there is no heap blit here. -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gecko-wasm (single-threaded experiment)</title>
+  <style>
+    body { font: 13px monospace; margin: 8px; }
+    #bar { margin-bottom: 6px; }
+    #addr { width: 540px; }
+    canvas { border: 1px solid #ccc; image-rendering: pixelated; display: block; background: #fff; }
+    #log { white-space: pre-wrap; max-height: 220px; overflow: auto; background: #111; color: #ddd; padding: 6px; margin-top: 6px; }
+    #status { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <span id="status">loading…</span> &nbsp; thread model: <b>single (no pthreads)</b>
+    <br>
+    <input id="addr" value="data:text/html,<body style='margin:0;background:%23fff'><div style='width:400px;height:300px;background:%230066cc'></div><div style='width:200px;height:150px;background:%23cc0000'></div></body>">
+    <button id="go">Load</button>
+  </div>
+  <canvas id="screen" width="800" height="600" tabindex="0"></canvas>
+  <div id="log"></div>
+
+  <!-- gecko.js (MODULARIZE) must load first so createGecko is defined. -->
+  <script src="gecko.js"></script>
+  <script>
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    const addrEl = document.getElementById('addr');
+    const canvas = document.getElementById('screen');
+    const sp = new URLSearchParams(location.search);
+
+    function log(...a) { const s = a.join(' '); logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+    function setStatus(s) { statusEl.textContent = s; }
+    window.__stLog = [];
+    function onStdout(s) { window.__stLog.push(s); log(s); try { console.log(s); } catch (e) {} }
+    window.addEventListener('error', (e) => { window.__stErr = String(e.message || e.error || e); onStdout('[window.error] ' + window.__stErr); });
+    window.addEventListener('unhandledrejection', (e) => { window.__stErr = String(e.reason); onStdout('[unhandledrejection] ' + window.__stErr); });
+
+    let M = null;
+
+    createGecko({
+      print: onStdout,
+      printErr: onStdout,
+      canvas,
+      preRun: [(m) => {
+        m.ENV['GRE_DIR'] = '/gre';
+        m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
+        const mozlog = sp.get('mozlog');
+        if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
+        const url0 = sp.get('url');
+        if (url0) m.ENV['GECKO_ST_URL'] = url0;   // optional startup load
+        for (const [k, v] of sp) if (k.startsWith('env.')) m.ENV[k.slice(4)] = v;
+      }],
+      onAbort: (w) => { setStatus('ABORTED'); log('[ABORT] ' + w); window.__stAbort = String(w); },
+    }).then((m) => {
+      M = m;
+      window.__geckoModule = m;
+      window.__geckoReady = true;
+      setStatus('ready (single-threaded)');
+      log('=== module ready; main() returned, st_tick running ===');
+    }).catch((e) => {
+      setStatus('FAILED');
+      log('[reject] ' + (e && e.stack || e));
+      window.__stReject = String(e && e.message || e);
+    });
+
+    // Navigation: st_load is synchronous (blocks the main thread during the load,
+    // which is fine for a probe). Returns 0 on success.
+    function geckoRender(url) {
+      if (!M) { log('not ready'); return -1; }
+      const w = canvas.width, h = canvas.height;
+      log('>> st_load ' + url.slice(0, 80));
+      const rv = M.ccall('st_load', 'number', ['string', 'number', 'number'], [url, w, h]);
+      log('<< st_load rv=' + rv);
+      return rv;
+    }
+    window.geckoRender = geckoRender;   // Playwright hook
+    document.getElementById('go').onclick = () => geckoRender(addrEl.value);
+
+    // Input -> synchronous ccall (each repaints via st_present on the C side).
+    function xy(e) {
+      const r = canvas.getBoundingClientRect();
+      return [Math.round((e.clientX - r.left) * canvas.width / r.width),
+              Math.round((e.clientY - r.top) * canvas.height / r.height)];
+    }
+    canvas.addEventListener('mousedown', (e) => { canvas.focus(); const [x, y] = xy(e); M && M.ccall('st_mouse', null, ['number','number','number','number','number','number','number'], [1, x, y, e.button, 1, -1, 0]); });
+    canvas.addEventListener('mouseup',   (e) => { const [x, y] = xy(e); M && M.ccall('st_mouse', null, ['number','number','number','number','number','number','number'], [2, x, y, e.button, 1, -1, 0]); });
+    canvas.addEventListener('mousemove', (e) => { const [x, y] = xy(e); M && M.ccall('st_mouse', null, ['number','number','number','number','number','number','number'], [0, x, y, 0, 0, -1, 0]); });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('wheel', (e) => { e.preventDefault(); const [x, y] = xy(e); M && M.ccall('st_wheel', null, ['number','number','number','number','number'], [x, y, e.deltaX | 0, e.deltaY | 0, 0]); }, { passive: false });
+    canvas.addEventListener('keydown', (e) => { M && M.ccall('st_key', null, ['number','string','number','number','number'], [0, e.key, e.keyCode, e.charCode || 0, 0]); });
+    canvas.addEventListener('keyup',   (e) => { M && M.ccall('st_key', null, ['number','string','number','number','number'], [1, e.key, e.keyCode, e.charCode || 0, 0]); });
+  </script>
+</body>
+</html>

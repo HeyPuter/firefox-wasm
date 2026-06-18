@@ -1,0 +1,171 @@
+<!doctype html><html><head><meta charset="utf-8"><title>gecko-wasm STJ (single OS thread, JSPI fibers, no SAB)</title>
+<style>body{font:12px monospace;margin:8px}#log{white-space:pre-wrap;max-height:300px;overflow:auto;background:#111;color:#ddd;padding:6px}canvas{border:1px solid #ccc;image-rendering:pixelated}</style>
+</head>
+<body>
+<div><b id="status">loading…</b> &nbsp; model: single OS thread, JSPI cooperative fibers, no SAB</div>
+<div style="margin:6px 0">
+  <input id="addr" type="text" placeholder="https://example.com" size="60"
+         style="font:13px monospace;padding:3px" disabled>
+  <button id="go" style="font:13px monospace;padding:3px 10px" disabled>Go</button>
+  <span id="navhint" style="color:#888"> &nbsp;(real sites load over WISP)</span>
+</div>
+<canvas id="screen" width="800" height="600"></canvas>
+<div id="log"></div>
+<script>
+// Force all CPU-count-sized thread pools (WebRender/SWGL rayon pool, image decoders,
+// JS helpers, etc.) to a single worker: idle pool workers sched_yield-SPIN (can't park
+// without SAB futex) and starve the cooperative scheduler. num_cpus::get() /
+// PR_GetNumberOfProcessors read navigator.hardwareConcurrency.
+try { Object.defineProperty(navigator, 'hardwareConcurrency', { value: 1, configurable: true }); } catch (e) {}
+window.__log = []; const el = document.getElementById('log'); const stEl = document.getElementById('status');
+// Keep the on-page log cheap: bound the array + render only the last ~150 lines (O(150) per
+// call) instead of `textContent +=` which re-serializes an UNBOUNDED string each log -> a
+// growing DOM cost. console.log is the durable record.
+function L(s){ s=String(s); const a=window.__log; a.push(s); if(a.length>500) a.splice(0,a.length-500);
+  el.textContent = a.slice(-150).join('\n'); el.scrollTop = el.scrollHeight; try{console.log(s)}catch(e){} }
+function setStatus(s){ stEl.textContent = s; }
+// flip internal memory shared flag off (0x03 -> 0x01) so it instantiates without SAB
+function patchNonShared(b){ let o=8;const rd=()=>{let r=0,s=0,x;do{x=b[o++];r|=(x&0x7f)<<s;s+=7;}while(x&0x80);return r>>>0;};
+  while(o<b.length){const id=b[o++];const sz=rd();const st=o;if(id===5){let p=o;const r2=()=>{let r=0,s=0,x;do{x=b[p++];r|=(x&0x7f)<<s;s+=7;}while(x&0x80);return r>>>0;};r2();if(b[p]&2){b[p]&=~2;return true;}return false;}o=st+sz;}return false; }
+const sp = new URLSearchParams(location.search);
+// stj_mutex_lock is NOT here: it's a no-op (cooperative single-thread needs no mutex
+// exclusion), so it must be a PLAIN import. V8 throws SuspendError when a Suspending
+// import is *called* under JS frames even if it returns synchronously, so a Suspending
+// no-op still dies; a plain no-op returns cleanly.
+// mutex + rwlock are no-ops (no exclusion needed single-thread) and must be PLAIN imports
+// (a Suspending import called under JS frames SuspendErrors even when it returns sync).
+const SUSPENDING = ['stj_join','stj_yield_','stj_browser_yield','stj_sleep','stj_poll_wait','stj_cond_wait','stj_sem_wait','stj_futex_wait'];
+let INST = null, OPTS = null;
+// The built-in interactive demo: "inject:" routes to the synchronous fragment-inject
+// render path (no necko/network). Real URLs typed in the address bar go through necko.
+const DEFAULT_URL = "inject:";
+// WISP networking endpoint. Default to this page's own origin (server.cjs serves a WISP
+// endpoint on the same host:port via ws://), or override with ?wisp=ws://host:port/.
+// Real http(s):// URLs are fetched by Necko over WISP, single OS thread, no SAB.
+const wispUrl = sp.get('wisp') ||
+  ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/');
+</script>
+<script src="jspi-sched.js"></script>
+<script src="wisp-bridge.js"></script>
+<script src="gecko.js"></script>
+<script>
+createGecko({
+  print: L, printErr: L, canvas: document.getElementById('screen'),
+  preRun: [(m) => {
+    m.ENV['GRE_DIR'] = '/gre';
+    m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
+    m.ENV['MOZ_STJ_SKIP_CLIENT'] = '1';   // skip optional initial ClientSource (PBackground deadlock)
+    m.ENV['GECKO_ST_URL'] = sp.get('url') || DEFAULT_URL;
+    if (sp.get('mozlog')) m.ENV['MOZ_LOG'] = sp.get('mozlog');
+    for (const [k, v] of sp) if (k.startsWith('env.')) m.ENV[k.slice(4)] = v;
+  }],
+  onAbort: (w) => { setStatus('ABORTED'); L('[ABORT] ' + w); window.__stjAbort = String(w); },
+  instantiateWasm: function (info, receive) {
+    const env = info.env || info;
+    SUSPENDING.forEach((n) => { if (typeof env[n] === 'function') env[n] = new WebAssembly.Suspending(env[n]); });
+    fetch('gecko.wasm').then((r) => r.arrayBuffer()).then((ab) => {
+      const bytes = new Uint8Array(ab); L('[stj] patched memory non-shared: ' + patchNonShared(bytes));
+      return WebAssembly.instantiate(bytes, info);
+    }).then(({ instance, module }) => {
+      INST = instance;
+      // TLS setup BEFORE global ctors run (ctors may touch thread_local).
+      const ex = instance.exports;
+      const size = ex.stj_tls_size();
+      const base = ex.malloc(size || 8);
+      ex.__wasm_init_tls(base);
+      const template = new Uint8Array(ex.memory.buffer).slice(base, base + size);
+      OPTS = { base, size, template };
+      L('[stj] TLS base=' + base + ' size=' + size + ' buffer=' + ex.memory.buffer.constructor.name);
+      receive(instance, module);
+    }).catch((e) => { L('instantiate err: ' + e); window.__stjErr = String(e); setStatus('FAILED'); });
+    return {};
+  },
+}).then((M) => {
+  L('[stj] module ready; crossOriginIsolated=' + self.crossOriginIsolated + ' SAB=' + (typeof SharedArrayBuffer));
+  M.__STJ = makeSTJScheduler(INST.exports, OPTS, L);
+  window.__M = M; window.__STJg = M.__STJ;   // test/diagnostic hooks
+  // WISP networking: route emscripten SOCKFS sockets over one WebSocket to the WISP
+  // server (same origin via server.cjs). Real http(s):// loads then reach the internet.
+  try {
+    if (typeof WISP !== 'undefined') { WISP.install(M, wispUrl); L('[stj] WISP networking enabled via ' + wispUrl); }
+    else L('[stj] WISP bridge missing -- only data:/file: URLs will load');
+  } catch (e) { L('[stj] WISP install err: ' + e); }
+  setStatus('booting main fiber…');
+  window.__geckoBooted = true;
+  // Watchdog: every 2s dump scheduler state. If this keeps firing the browser loop is
+  // free (clean cooperative wait); if it goes silent while not READY, a fiber is
+  // busy-spinning (pegging the one OS thread). Detects no-progress deadlocks.
+  let lastActs = -1, sameCount = 0;
+  window.__stjWatch = setInterval(() => {
+    try {
+      const d = M.__STJ.dump();
+      const stuck = (d.acts === lastActs);
+      if (d.acts === lastActs) sameCount++; else sameCount = 0;
+      lastActs = d.acts;
+      L('[wd] ' + JSON.stringify(d) + (stuck ? ' (no progress x' + sameCount + ')' : ''));
+      window.__stjDump = d;
+    } catch (e) {}
+  }, 2000);
+  // --- input forwarding (render+input dispatch loop) -----------------------
+  // DOM events are queued here and DRAINED BY THE MAIN FIBER via onBrowserYield (so the
+  // st_mouse/st_key/st_wheel re-entries run with the main fiber's TLS+shadow stack). The
+  // main fiber's cooperative loop already re-presents each iteration -> live render loop.
+  (function wireInput() {
+    const cv = document.getElementById('screen');
+    cv.tabIndex = 0;                                   // focusable for keyboard
+    const W = 800, H = 600, MOD_ALT = 1, MOD_CTRL = 2, MOD_SHIFT = 4, MOD_META = 8;
+    const q = (window.__stjInput = []);
+    const xy = (e) => { const r = cv.getBoundingClientRect(); return [Math.round((e.clientX - r.left) * (W / r.width)), Math.round((e.clientY - r.top) * (H / r.height))]; };
+    const mods = (e) => (e.altKey ? MOD_ALT : 0) | (e.ctrlKey ? MOD_CTRL : 0) | (e.shiftKey ? MOD_SHIFT : 0) | (e.metaKey ? MOD_META : 0);
+    const push = (it) => { // coalesce consecutive mousemoves AND wheels; cap backlog
+      const last = q.length ? q[q.length - 1] : null;
+      if (it[0] === 'm' && it[1] === 0 && last && last[0] === 'm' && last[1] === 0) { q[q.length - 1] = it; }
+      // Coalesce consecutive wheel events: sum the scroll deltas and apply ONCE. Each st_wheel
+      // does a full synchronous RenderDocument, so without this a fast scroll queues N wheels
+      // -> N full re-renders per drain -> lag. Summing is exact (scrolling is additive).
+      else if (it[0] === 'w' && last && last[0] === 'w') { last[3] += it[3]; last[4] += it[4]; last[1] = it[1]; last[2] = it[2]; last[5] = it[5]; }
+      else q.push(it);
+      if (q.length > 256) q.splice(0, q.length - 256);
+    };
+    cv.addEventListener('mousemove', (e) => { const [x, y] = xy(e); push(['m', 0, x, y, 0, 0, e.buttons, mods(e)]); });
+    cv.addEventListener('mousedown', (e) => { cv.focus(); const [x, y] = xy(e); push(['m', 1, x, y, e.button, e.detail || 1, e.buttons, mods(e)]); e.preventDefault(); });
+    cv.addEventListener('mouseup', (e) => { const [x, y] = xy(e); push(['m', 2, x, y, e.button, e.detail || 1, e.buttons, mods(e)]); e.preventDefault(); });
+    cv.addEventListener('contextmenu', (e) => e.preventDefault());
+    cv.addEventListener('wheel', (e) => { const [x, y] = xy(e); push(['w', x, y, Math.round(e.deltaX), Math.round(e.deltaY), mods(e)]); e.preventDefault(); }, { passive: false });
+    const keyItem = (e, t) => ['k', t, e.key, e.keyCode, (e.key.length === 1 ? e.key.codePointAt(0) : 0), mods(e)];
+    // Listen on WINDOW (not just the canvas) so keys are captured regardless of which DOM
+    // element is focused -- the page lives entirely in the wasm doc, so all keys go to it.
+    // BUT skip when a chrome form field (the address bar) is focused, else preventDefault()
+    // would block typing in the URL box.
+    const intoChrome = (e) => { const t = e.target; return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)); };
+    window.addEventListener('keydown', (e) => { if (intoChrome(e)) return; L('[input] keydown ' + e.key); push(keyItem(e, 0)); e.preventDefault(); });
+    window.addEventListener('keyup', (e) => { if (intoChrome(e)) return; push(keyItem(e, 1)); e.preventDefault(); });
+    window.geckoInput = (it) => push(it);              // test hook: synthesize raw events
+    // Address bar: a nav request is queued (NOT called inline) so st_request_nav runs in
+    // the MAIN fiber's context via the drain below -- a JS event handler runs on whatever
+    // fiber is currently suspended, and writing through a wasm export there is only safe
+    // because st_request_nav is non-blocking (no event-loop spin, no malloc).
+    const addr = document.getElementById('addr'), go = document.getElementById('go');
+    const navTo = () => { const u = (addr.value || '').trim(); if (u) { L('[nav] -> ' + u); push(['n', u]); } };
+    go.addEventListener('click', navTo);
+    addr.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); navTo(); } });
+    addr.disabled = false; go.disabled = false;
+    window.geckoNavigate = (u) => push(['n', u]);      // test hook
+    // Drain runs in the MAIN FIBER context (called from browserYield).
+    M.__STJ.onBrowserYield = function () {
+      if (!q.length) return;
+      const evs = q.splice(0, q.length);
+      for (const e of evs) {
+        if (e[0] === 'm') M._st_mouse(e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+        else if (e[0] === 'w') M._st_wheel(e[1], e[2], e[3], e[4], e[5]);
+        else if (e[0] === 'k') { L('[input] dispatch key t=' + e[1] + ' key=' + e[2] + ' ch=' + e[4]); M.ccall('st_key', null, ['number', 'string', 'number', 'number', 'number'], [e[1], e[2], e[3], e[4], e[5]]); }
+        else if (e[0] === 'n') { L('[nav] request st_request_nav ' + e[1]); M.ccall('st_request_nav', null, ['string'], [e[1]]); }
+      }
+    };
+    L('[stj] input forwarding wired (#screen -> main fiber)');
+  })();
+  M.__STJ.boot();                 // runs stj_main_body (xul_init + cooperative loop); does not resolve while alive
+  setStatus('running (single-threaded JSPI)');
+}).catch((e) => { L('module err: ' + e); window.__stjErr = String(e); setStatus('FAILED'); });
+</script>
+</body></html>

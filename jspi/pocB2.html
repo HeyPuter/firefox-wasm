@@ -1,0 +1,52 @@
+<!doctype html><html><head><meta charset="utf-8"><title>JSPI fiber PoC (no SAB)</title></head>
+<body><pre id="log"></pre>
+<script src="pocB2.js"></script>
+<script>
+window.__log = []; const el = document.getElementById('log');
+function L(s) { window.__log.push(String(s)); el.textContent += s + '\n'; try { console.log(s); } catch (e) {} }
+let INST = null;
+
+createPocB2({
+  print: L, printErr: L,
+  instantiateWasm: function (info, receive) {
+    const env = info.env || info;
+    // st_join becomes a SUSPENDING import (it returns a Promise).
+    env.st_join = new WebAssembly.Suspending(env.st_join);
+    fetch('pocB2.wasm').then((r) => r.arrayBuffer()).then((buf) => WebAssembly.instantiate(buf, info))
+      .then(({ instance, module }) => { INST = instance; window.__inst = instance; receive(instance, module); })
+      .catch((e) => { L('instantiate err ' + e); window.__err = String(e); });
+    return {};
+  },
+}).then((M) => {
+  L('crossOriginIsolated=' + self.crossOriginIsolated + ' SharedArrayBuffer=' + (typeof SharedArrayBuffer));
+  // Scheduler state + main fiber (id 0).
+  M.__ST = { fibers: { 0: { id: 0, started: true, done: false, joiners: [], resume: null, spec: {} } },
+             nextId: 1, current: 0, runQ: [], running: false };
+  const promisingStart = WebAssembly.promising(INST.exports.st_fiber_start);
+  function onDone(f) {
+    f.done = true; M.__ST.running = false; M.__ST.current = 0;
+    const j = f.joiners; f.joiners = [];
+    j.forEach((jid) => M.__ST.runQ.push(jid));
+    queueMicrotask(M.__stPump);
+  }
+  M.__stPump = function () {
+    const S = M.__ST;
+    if (S.running || S.runQ.length === 0) return;
+    const id = S.runQ.shift(); const f = S.fibers[id];
+    S.running = true; S.current = id;
+    if (!f.started) {
+      f.started = true;
+      promisingStart(f.start, f.arg).then(() => onDone(f)).catch((e) => { L('fiber ' + id + ' threw: ' + e); onDone(f); });
+    } else {
+      const r = f.resume; f.resume = null; if (r) r();   // resume suspended fiber
+    }
+  };
+  // run_test is promising so its pthread_join can suspend the main fiber.
+  const runTest = WebAssembly.promising(INST.exports.run_test);
+  L('[js] calling promising run_test()');
+  runTest().then((rv) => {
+    L('[js] run_test resolved rv=' + rv + ' (expect 7)');
+    window.__done = { rv, coi: self.crossOriginIsolated, sab: typeof SharedArrayBuffer };
+  }).catch((e) => { L('[js] run_test threw: ' + e); window.__err = String(e); });
+}).catch((e) => { L('module err ' + e); window.__err = String(e); });
+</script></body></html>

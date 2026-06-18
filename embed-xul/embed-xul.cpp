@@ -12,6 +12,9 @@
 #include "nsXPCOM.h"
 #include "nsCOMPtr.h"
 #include "nsIFile.h"
+#ifdef GECKO_STJ_BUILD
+#include "nsXULAppAPI.h"          // XRE_IsParentProcess / XRE_GetProcessTypeString
+#endif
 #include "nsIServiceManager.h"
 #include "nsICategoryManager.h"
 #include "nsIComponentRegistrar.h"
@@ -357,6 +360,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         "network.http.network_access_on_socket_process.enabled", false);
     printf("xul_init: disabled socket/network process (single process)\n");
     fflush(stdout);
+#ifdef GECKO_STJ_BUILD
+    // Root-cause probe for the PBackground/PortLink null-call: XRE_GetAsyncIOEventTarget()
+    // = IOThread::Get()->GetEventTarget(). IOThread::Startup() only creates the IOThread
+    // singleton when XRE_IsParentProcess(); if this embedder isn't seen as the parent,
+    // sSingleton stays null and every PBackground PortLink hits a null function.
+    printf("xul_init[stj]: process=%s XRE_IsParentProcess=%d IsContent=%d IsSocket=%d\n",
+           XRE_GetProcessTypeString(), (int)XRE_IsParentProcess(),
+           (int)XRE_IsContentProcess(), (int)XRE_IsSocketProcess());
+    fflush(stdout);
+#endif
+    // NOTE (STJ): dom.use_watchdog is set false via greprefs (build-embed-stj.sh), NOT
+    // here -- a mid-init Preferences::SetBool for it blocks main on a pref observer that
+    // never converges cooperatively. A default pref is read once at XPConnect init.
 
     // Stylo thread count. Kept SEQUENTIAL (1) deliberately: build-std+atomics makes
     // parallel stylo *work* (no more "thread handle already set" abort, threads spawn
@@ -574,6 +590,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // services (QuotaManager/IndexedDB, cookies) initialize. Doing it here, right
     // before we return to the event loop, lets their background init proceed
     // without deadlocking the synchronous init steps.
+#ifndef GECKO_STJ_BUILD
     {
       nsCOMPtr<nsIObserverService> obs =
           do_GetService("@mozilla.org/observer-service;1");
@@ -585,6 +602,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         fflush(stdout);
       }
     }
+#else
+    // STJ: skip profile-do-change. It activates JS storage services (cookies) via
+    // nsXPCWrappedJS -> the C++->JS call goes through an addFunction'd xptcall JS shim,
+    // and the watchdog/lock block beneath it can't JSPI-suspend across that JS frame
+    // ("SuspendError: trying to suspend JS frames"). Not needed to paint a data: URL.
+    printf("xul_init[stj]: SKIPPED profile-do-change (avoid C++->JS xptcall block)\n");
+    fflush(stdout);
+#endif
 
     // Chrome build: start the Add-on Manager exactly as XRE does
     // (nsXREDirProvider) -- the amManager integration service starts the
@@ -764,11 +789,13 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
 
   // Content-only embedding: a windowless browser is enough to host a page and
   // render it to canvas.
+  printf("EnsureBrowser: got appShell, calling CreateWindowlessBrowser\n"); fflush(stdout);
   nsresult rv = appShell->CreateWindowlessBrowser(false, 0, getter_AddRefs(g_wb));
   if (NS_FAILED(rv) || !g_wb) {
     printf("EnsureBrowser: CreateWindowlessBrowser failed 0x%08x\n", (unsigned)rv);
     return nullptr;
   }
+  printf("EnsureBrowser: CreateWindowlessBrowser OK, GetDocShell\n"); fflush(stdout);
   g_wb->GetDocShell(getter_AddRefs(g_docShell));
   // Give the docshell a real size + make it visible, so its PresShell has a
   // non-empty viewport and actually reflows/paints.
@@ -779,6 +806,7 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
   }
   g_lastW = width;
   g_lastH = height;
+  printf("EnsureBrowser: docshell set, sized+visible, RefreshScreen\n"); fflush(stdout);
   RefreshScreen(width, height);
   nsCOMPtr<nsIWebProgress> webProgress = do_QueryInterface(g_docShell);
   if (webProgress) {
@@ -887,6 +915,11 @@ static bool xul_chrome_load_content(const char* url, int width, int height) {
   return true;
 }
 
+static void st_present();   // fwd decl: progressive synchronous paint (defined below)
+#ifdef GECKO_STJ_BUILD
+extern "C" void stj_browser_yield(void);   // fwd decl (file scope; defined later)
+#endif
+
 static bool xul_load(const char* url, int width, int height) {
   using namespace mozilla;
   using mozilla::dom::Document;
@@ -895,6 +928,99 @@ static bool xul_load(const char* url, int width, int height) {
 
   nsIDocShell* ds = EnsureBrowser(width, height);
   if (!ds) return false;
+
+#ifdef GECKO_STJ_BUILD
+  // STJ render path. The real necko top-level load currently does NOT complete on
+  // cooperative fibers: with single-process prefs (fission/e10s off) the data:
+  // DocumentChannel redirect now creates the replacement document (isNew=1), but it stays
+  // at readyState=LOADING -- the resumed channel's parse never finishes (next frontier).
+  // So we render by injecting the content directly into the windowless about:blank doc:
+  // synchronous fragment parser -> real frame tree -> synchronous PresShell::RenderDocument
+  // (no async compositor) -> canvas. This proves real Gecko layout + software paint of
+  // styled HTML, single OS thread, no SAB.
+  //
+  // The inject path is used ONLY for the built-in interactive demo (url null/empty,
+  // "inject:", or "about:blank"). Any REAL url (http/https/data:/file:) falls through to
+  // the necko LoadURI path below so real sites actually load over the network (WISP).
+  const bool stj_inject = !url || !*url || strncmp(url, "inject:", 7) == 0 ||
+                          strcmp(url, "about:blank") == 0;
+  if (stj_inject) {
+    using mozilla::dom::Element;
+    // Inject directly into the PRISTINE windowless about:blank doc (do NOT LoadURI first
+    // -- that replaces about:blank with a half-loaded data: doc that injects to white).
+    // The necko top-level data: load does not complete the parse on cooperative fibers
+    // (the replacement doc is created with single-process prefs but stays readyState=
+    // LOADING; html5 flush=0 didn't change it), so injection is the render path.
+    PresShell* ps = ds->GetPresShell();
+    // CRITICAL for STJ: disable the async paint path. Any invalidation (input :hover,
+    // typing, DOM mutation) otherwise makes nsRefreshDriver::Tick -> PaintSynchronously ->
+    // CreateCompositor -> the WebRender SWGL pool do work, and on the single cooperative
+    // thread that pool busy-spins (can't park w/o SAB futex) and PEGS the thread -> the page
+    // freezes after a few seconds of interaction. We render via synchronous
+    // PresShell::RenderDocument (xul_paint), so the async compositor is never needed.
+    if (ps) ps->SetNeverPainting(true);
+    Document* doc = ps ? ps->GetDocument() : nullptr;
+    Element* body = doc ? doc->GetBody() : nullptr;
+    printf("xul_load[stj]: inject doc=%p body=%p neverPainting=set\n", (void*)doc, (void*)body);
+    fflush(stdout);
+    if (body) {
+      body->SetAttr(kNameSpaceID_None, nsGkAtoms::style,
+                    u"margin:0;background:#ffffff"_ns, true);
+      // Interactive content (pure CSS + form, no content JS) so the render+input loop is
+      // observable: #b turns red on :hover, green on :active; the <input> shows typed text
+      // + caret. st_present samples the button center (160,80) to confirm input -> repaint.
+      nsAutoString html;
+      html.AssignLiteral(
+          u"<style>body{margin:0;font-family:sans-serif}"
+          u"#b{position:absolute;left:40px;top:40px;width:240px;height:80px;"
+          u"background:#0066cc;color:#fff;font-size:28px;display:flex;"
+          u"align-items:center;justify-content:center}"
+          u"#b:hover{background:#cc0000}#b:active{background:#00aa00}"
+          u"#t{position:absolute;left:40px;top:160px;width:320px;height:40px;font-size:24px}"
+          u"</style>"
+          u"<div id='b'>hover / click</div>"
+          u"<input id='t'>");
+      nsContentUtils::ParseFragmentHTML(html, body, nsGkAtoms::body, kNameSpaceID_XHTML,
+                                        /*aQuirks*/ true, /*aPreventScriptExecution*/ true);
+      // The windowless initial doc defers its initial reflow (no frames yet) -> force it.
+      if (!ps->DidInitialize()) ps->Initialize();
+      doc->FlushPendingNotifications(mozilla::FlushType::Layout);
+      printf("xul_load[stj]: body children=%u hasPrimaryFrame=%d\n",
+             (unsigned)body->GetChildCount(), (int)(body->GetPrimaryFrame() != nullptr));
+      fflush(stdout);
+    }
+    // Make our content window focused + ACTIVE so synthesized keyboard events route to the
+    // focused element (and :focus/caret enable). A windowless browser is otherwise never
+    // active. The STJ path returns before the normal focus setup below, so do it here.
+    {
+      nsCOMPtr<nsIFocusManager> fm = do_GetService("@mozilla.org/focus-manager;1");
+      nsCOMPtr<mozIDOMWindowProxy> fwin = do_GetInterface(ds);
+      if (fm && fwin) fm->SetFocusedWindow(fwin);
+      if (nsFocusManager* fmc = nsFocusManager::GetFocusManager())
+        if (fwin) fmc->WindowRaised(fwin, nsFocusManager::GenerateFocusActionId());
+      printf("xul_load[stj]: focus+activate window done\n");
+      fflush(stdout);
+    }
+    for (uint32_t i = 0; i < 64; i++) {
+      NS_ProcessPendingEvents(nullptr, PR_MillisecondsToInterval(4));
+      if ((i % 8) == 0) {
+        if (Document* d2 = ps ? ps->GetDocument() : nullptr)
+          d2->FlushPendingNotifications(mozilla::FlushType::Layout);
+        st_present();
+      }
+      stj_browser_yield();
+    }
+    st_present();
+    printf("xul_load[stj]: inject+paint done\n");
+    fflush(stdout);
+    return true;
+  }
+  // Real-URL necko path (STJ): disable the async paint/compositor path here too. Any
+  // invalidation during load would otherwise drive nsRefreshDriver::Tick -> the WebRender
+  // SWGL pool, which busy-spins on the single cooperative thread and pegs it. We present
+  // via synchronous PresShell::RenderDocument (st_present), so the compositor is unneeded.
+  if (mozilla::PresShell* ps0 = ds->GetPresShell()) ps0->SetNeverPainting(true);
+#endif
 
   // Chrome build: a non-chrome URL is a site to open in the current tab (the
   // chrome window itself stays at browser.xhtml). The chrome must already be up.
@@ -938,6 +1064,39 @@ static bool xul_load(const char* url, int width, int height) {
   // loop (op=4, ~25fps) keeps repainting as the page hydrates/mutates afterward -- i.e.
   // progressive load, like a real browser, instead of a multi-minute stall.
   uint32_t spins = 0;
+#ifdef GECKO_STJ_BUILD
+  // STJ: do NOT block in SpinEventLoopUntil (NS_ProcessNextEvent mayWait=true blocks on
+  // the engine event queue's condvar; with everything cooperative the awaited event never
+  // arrives -> deadlock). Instead pump pending events NON-blocking, yield to the BROWSER
+  // event loop between passes (so timers, the IPC IO fiber, and the data: load actually
+  // advance), and paint progressively. xul_paint() is a synchronous PresShell::RenderDocument
+  // into a Skia surface, so pixels don't need the async vsync/compositor pipeline at all.
+  {
+    for (;;) {
+      NS_ProcessPendingEvents(nullptr, PR_MillisecondsToInterval(4));
+      PresShell* p = ds->GetPresShell();
+      Document* d = p ? p->GetDocument() : nullptr;
+      int st = d ? (int)d->GetReadyStateEnum() : -1;
+      bool isNew = d && d != oldDoc;
+      if (isNew && st >= (int)Document::READYSTATE_INTERACTIVE) {
+        printf("xul_load[stj]: doc INTERACTIVE after %u passes (st=%d)\n", spins, st);
+        fflush(stdout);
+        break;
+      }
+      if (++spins > 6000) {
+        printf("xul_load[stj]: cap reached spins=%u st=%d isNew=%d\n", spins, st, (int)isNew);
+        fflush(stdout);
+        break;
+      }
+      if ((spins % 16) == 0) {
+        printf("xul_load[stj]: pass %u st=%d isNew=%d (painting)\n", spins, st, (int)isNew);
+        fflush(stdout);
+        st_present();   // progressive synchronous paint -> #screen
+      }
+      stj_browser_yield();
+    }
+  }
+#else
   SpinEventLoopUntil("xul_load"_ns, [&]() -> bool {
     PresShell* p = ds->GetPresShell();
     Document* d = p ? p->GetDocument() : nullptr;
@@ -948,6 +1107,7 @@ static bool xul_load(const char* url, int width, int height) {
   });
   printf("xul_load: spun %u, ready\n", spins);
   fflush(stdout);
+#endif
 
   // Make our content window the focused/active window so synthesized keyboard
   // events route to the focused element (otherwise nsFocusManager has no active
@@ -1775,12 +1935,215 @@ static void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
 }
 
 
+#ifndef __EMSCRIPTEN_PTHREADS__
+// ===== EXPERIMENTAL single-threaded (ST) cooperative driver =====
+// No pthreads: rendering is software (PresShell::RenderDocument -> Skia), presented
+// straight to the page <canvas id="screen"> from the browser main thread. JS calls
+// the st_* entry points synchronously; st_tick() keeps timers/animations advancing.
+static int g_st_w = 800;
+static int g_st_h = 600;
+
+// Software-paint the current document and blit BGRA -> the #screen canvas (RGBA).
+static double g_present_ms = 0; static uint32_t g_present_n = 0;
+static void st_present() {
+  if (!g_docShell) return;
+  double _pt0 = emscripten_get_now();
+  uint8_t* buf = xul_paint(g_st_w, g_st_h);
+  if (!buf) return;
+  // PROOF instrumentation (OPT-IN): count non-black / non-white pixels so the LOG shows the
+  // paint produced real content. This scans the WHOLE 480k-px buffer at -O0 (the embedder is
+  // built -O0) on EVERY present -> ~tens of ms each, a real perf drag during a load that
+  // presents repeatedly. Default OFF; tests set GECKO_ST_STATS=1 (e.g. ?env.GECKO_ST_STATS=1).
+  static int s_stats = -1;
+  if (s_stats < 0) { const char* e = getenv("GECKO_ST_STATS"); s_stats = (e && *e && *e != '0') ? 1 : 0; }
+  if (s_stats) {
+    size_t n = (size_t)g_st_w * g_st_h, nonblack = 0, colored = 0;
+    for (size_t i = 0; i < n; i++) {
+      uint8_t b = buf[i * 4], g = buf[i * 4 + 1], r = buf[i * 4 + 2];
+      if (r || g || b) nonblack++;
+      if (!((r > 240 && g > 240 && b > 240) || (r < 16 && g < 16 && b < 16))) colored++;
+    }
+    auto px = [&](int x, int y) -> int {
+      size_t o = ((size_t)y * g_st_w + x) * 4;
+      return (buf[o + 2] << 16) | (buf[o + 1] << 8) | buf[o];  // RGB
+    };
+    // Non-white pixel count in the <input> box [40,360)x[160,200): caret-only ~ a few,
+    // typed text ~ hundreds -> robust keyboard-insertion signal (no placeholder now).
+    size_t inkInput = 0;
+    for (int yy = 160; yy < 200 && yy < g_st_h; yy++)
+      for (int xx = 40; xx < 360 && xx < g_st_w; xx++) {
+        size_t o = ((size_t)yy * g_st_w + xx) * 4;
+        if (!(buf[o] > 240 && buf[o + 1] > 240 && buf[o + 2] > 240)) inkInput++;
+      }
+    printf("st_present: %dx%d nonblack=%zu colored=%zu | btn(160,80)=#%06x inputInk=%zu bg(500,400)=#%06x\n",
+           g_st_w, g_st_h, nonblack, colored, px(160, 80), inkInput, px(500, 400));
+    fflush(stdout);
+  }
+  EM_ASM(
+      {
+        var ptr = $0; var w = $1; var h = $2; var n = w * h * 4;
+        var cv = document.getElementById('screen');
+        if (!cv) return;
+        if (cv.width !== w) cv.width = w;
+        if (cv.height !== h) cv.height = h;
+        var ctx = cv.getContext('2d');
+        var img = ctx.createImageData(w, h);
+        var d = img.data; var src = HEAPU8;
+        for (var i = 0; i < n; i += 4) {
+          d[i] = src[ptr + i + 2];      // R <- B
+          d[i + 1] = src[ptr + i + 1];  // G
+          d[i + 2] = src[ptr + i];      // B <- R
+          d[i + 3] = 255;               // opaque
+        }
+        ctx.putImageData(img, 0, 0);
+      },
+      buf, g_st_w, g_st_h);
+  free(buf);
+  g_present_ms += emscripten_get_now() - _pt0; g_present_n++;
+  if ((g_present_n & 15) == 0) { printf("st_present: %u paints, %.0f ms total (%.1f ms/paint)\n", g_present_n, g_present_ms, g_present_ms / g_present_n); fflush(stdout); }
+}
+
+// Per-frame: advance Gecko's main-thread event loop a little (refresh driver,
+// timers, JS/CSS animations) then repaint. Bounded work so the browser stays live.
+static void st_tick() {
+  NS_ProcessPendingEvents(nullptr, PR_MillisecondsToInterval(8));
+  if (g_docShell) {
+    if (mozilla::PresShell* ps = g_docShell->GetPresShell())
+      if (auto* d = ps->GetDocument())
+        d->FlushPendingNotifications(mozilla::FlushType::Layout);
+  }
+  st_present();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int st_load(const char* url, int w, int h) {
+  if (w > 0) g_st_w = w;
+  if (h > 0) g_st_h = h;
+  printf("embed-xul[st]: st_load(%dx%d) %.90s\n", g_st_w, g_st_h, url ? url : "");
+  fflush(stdout);
+  bool ok = xul_load(url, g_st_w, g_st_h);
+  printf("embed-xul[st]: st_load -> %s\n", ok ? "OK" : "FAIL");
+  fflush(stdout);
+  st_present();
+  return ok ? 0 : 1;
+}
+
+#ifdef GECKO_STJ_BUILD
+// Address-bar navigation request. The URL box in the harness must NOT call xul_load
+// directly: xul_load spins the event loop (stj_browser_yield), and a JS event handler
+// runs on whatever fiber's stack is currently active/suspended, so blocking there would
+// corrupt the suspended main fiber's shadow stack. Instead JS (via the onBrowserYield
+// drain, which runs in the MAIN fiber's context) calls st_request_nav -- a tiny
+// non-blocking write of a static buffer -- and the main fiber's loop picks it up at a
+// clean top-level point and runs the (blocking) load itself.
+static char g_stj_nav_url[4096];
+static volatile int g_stj_nav_pending = 0;
+extern "C" EMSCRIPTEN_KEEPALIVE void st_request_nav(const char* url) {
+  if (!url) return;
+  strncpy(g_stj_nav_url, url, sizeof(g_stj_nav_url) - 1);
+  g_stj_nav_url[sizeof(g_stj_nav_url) - 1] = 0;
+  g_stj_nav_pending = 1;
+  printf("embed-xul[stj]: nav requested -> %.90s\n", g_stj_nav_url);
+  fflush(stdout);
+}
+#endif
+// Per-input phase marker -- diagnostic only (set to the printf form to localize an
+// input-path hang). No-op in normal builds to avoid console spam slowing interaction.
+#define STJ_IN(p) ((void)0)
+extern "C" EMSCRIPTEN_KEEPALIVE void st_mouse(int evType, int x, int y, int button,
+                                              int clickCount, int buttons,
+                                              int modifiers) {
+  STJ_IN("mouse:do_mouse"); do_mouse(evType, x, y, button, clickCount, buttons, modifiers);
+  STJ_IN("mouse:pump");     PumpEvents();
+  STJ_IN("mouse:present");  st_present();
+  STJ_IN("mouse:done");
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void st_key(int evType, const char* keyValue,
+                                            int keyCode, int charCode,
+                                            int modifiers) {
+  STJ_IN("key:do_key"); do_key(evType, keyValue, keyCode, charCode, modifiers);
+  STJ_IN("key:pump");   PumpEvents();
+  STJ_IN("key:present"); st_present();
+  STJ_IN("key:done");
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void st_wheel(int x, int y, int dx, int dy,
+                                              int modifiers) {
+  STJ_IN("wheel:do_wheel"); do_wheel(x, y, (double)dx, (double)dy, modifiers);
+  STJ_IN("wheel:pump");     PumpEvents();
+  STJ_IN("wheel:present");  st_present();
+  STJ_IN("wheel:done");
+}
+
+#ifdef GECKO_STJ_BUILD
+// STJ build: the main "thread" is a JSPI fiber (run via stj_boot -> stj_main_body).
+// NS_InitXPCOM's worker threads become cooperative fibers (jspi-threads.c + the
+// scheduler); thread_local is per-fiber via TLS region save/restore; NO SAB. After
+// init, a cooperative loop pumps Gecko and yields to the browser (stj_browser_yield,
+// a suspending import) so timers/animations/input/other fibers all advance.
+extern "C" void stj_browser_yield(void);
+extern "C" void* stj_main_body(void* arg) {
+  (void)arg;
+  const char* gre = getenv("GRE_DIR");
+  if (!gre || !*gre) gre = "/gre";
+  printf("embed-xul[stj]: main fiber starting; xul_init(%s)\n", gre);
+  fflush(stdout);
+  int rv = xul_init(gre);
+  printf("embed-xul[stj]: xul_init rv=0x%08x\n", (unsigned)rv);
+  fflush(stdout);
+  if (rv != 0) {
+    printf("embed-xul[stj]: DONE (init failed) rv=0x%08x\n", (unsigned)rv);
+    fflush(stdout);
+    return (void*)(intptr_t)rv;
+  }
+  const char* url = getenv("GECKO_ST_URL");
+  if (url && *url) {
+    printf("embed-xul[stj]: st_load %.90s\n", url);
+    fflush(stdout);
+    st_load(url, g_st_w, g_st_h);
+  }
+  printf("embed-xul[stj]: READY (cooperative loop)\n");
+  fflush(stdout);
+  // Render loop. Don't full-frame RenderDocument every iteration (that's a CPU spin on an
+  // idle page) -- only present when Gecko has a pending style/layout flush (animation,
+  // async content, post-change restyle). Input dispatch already repaints immediately via
+  // st_mouse/st_key/st_wheel, so the loop only needs to catch non-input changes, plus a
+  // slow heartbeat as a safety net for paint-only invalidations NeedFlush might miss.
+  uint32_t hb = 0;
+  for (;;) {
+    NS_ProcessPendingEvents(nullptr, PR_MillisecondsToInterval(8));
+    // Address-bar navigation (set by st_request_nav from the onBrowserYield drain). Run
+    // the blocking load here, at a clean top-level point in the main fiber.
+    if (g_stj_nav_pending) {
+      g_stj_nav_pending = 0;
+      printf("embed-xul[stj]: navigating -> %.90s\n", g_stj_nav_url);
+      fflush(stdout);
+      st_load(g_stj_nav_url, g_st_w, g_st_h);
+    }
+    bool dirty = false;
+    if (g_docShell)
+      if (mozilla::PresShell* ps = g_docShell->GetPresShell())
+        dirty = ps->NeedFlush(mozilla::FlushType::Style) ||
+                ps->NeedFlush(mozilla::FlushType::Layout);
+    if (dirty || (++hb & 63) == 0) st_present();
+    stj_browser_yield();   // suspend to the browser event loop (drains input, runs fibers)
+  }
+  return 0;
+}
+#endif  // GECKO_STJ_BUILD
+#endif  // !__EMSCRIPTEN_PTHREADS__
+
 // With -sPROXY_TO_PTHREAD, main() runs on a dedicated pthread (Gecko's "main
 // thread"), leaving emscripten's runtime main thread free to service proxied
 // calls. This lets xul_render's SpinEventLoopUntil block here without deadlocking
 // the workers (WebRender/compositor/helper threads) that need the runtime thread.
+//
+// EXPERIMENTAL single-threaded build (ST=1, no -pthread, no PROXY_TO_PTHREAD):
+// main() can't loop forever (it's on the browser main thread) and there's no worker
+// for the Atomics command protocol, so it inits then hands control back to the
+// browser via emscripten_set_main_loop (st_tick), and JS drives via the st_* ccall
+// entry points. Selected at compile time via __EMSCRIPTEN_PTHREADS__, which
+// emscripten defines only when built with -pthread.
 int main() {
-  printf("embed-xul: main() on the app pthread (PROXY_TO_PTHREAD)\n");
+  printf("embed-xul: main() starting\n");
   fflush(stdout);
 
   g_cmd = (XulCmd*)calloc(1, sizeof(XulCmd));
@@ -1818,6 +2181,7 @@ int main() {
          (void*)g_cmd);
   fflush(stdout);
 
+#ifdef __EMSCRIPTEN_PTHREADS__
   // On-demand command loop: serve load/input/paint requests from JS until the
   // process ends. op selects the action; every op repaints and returns BGRA.
   for (;;) {
@@ -1914,4 +2278,19 @@ int main() {
     usleep(2000);  // breather; this is a real pthread (worker), so it can block
   }
   return 0;
+#else
+  // Single-threaded: init done. Hand control back to the browser; st_tick() pumps
+  // Gecko + repaints each frame, and JS drives navigation/input via the st_* ccall
+  // entry points (all synchronous, same thread). An optional GECKO_ST_URL loads on
+  // startup (handy for the node/headless probe). emscripten_set_main_loop returns,
+  // and EXIT_RUNTIME=0 keeps the module alive between frames.
+  {
+    const char* url = getenv("GECKO_ST_URL");
+    if (url && *url) st_load(url, g_st_w, g_st_h);
+  }
+  printf("embed-xul[st]: cooperative main loop running (no pthreads)\n");
+  fflush(stdout);
+  emscripten_set_main_loop(st_tick, 0, 0);
+  return 0;
+#endif
 }

@@ -31,7 +31,8 @@ socktest.js
 /web/sm.js
 
 # --- staged GRE (copied from dist/bin by stage-gre.sh at build time) ---
-gre-stage/
+# gre-stage/ (threaded) and gre-stage-st/ (single-threaded experiment)
+gre-stage*/
 
 # --- dependencies ---
 node_modules/

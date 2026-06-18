@@ -1,7 +1,19 @@
 # Full Gecko engine -> emscripten (browser wasm). Phase 2 (WIP).
 # Release (GECKO_RELEASE=1) uses its own objdir so switching debug<->release does
 # NOT reconfigure/rebuild a shared tree (LTO + the objdir would otherwise thrash).
-if [ "${GECKO_RELEASE:-}" = "1" ]; then
+# ST=1 (GECKO_ST) is the EXPERIMENTAL single-threaded build: its own objdir + no
+# -pthread anywhere; it takes precedence over RELEASE. GECKO_ST must also be present
+# in the build ENVIRONMENT (the Makefile exports it) so config/makefiles/rust.mk
+# drops Rust build-std +atomics at make-time -- the prebuilt single-threaded std is
+# the right match without -pthread.
+# STJ=1 (GECKO_STJ): single-threaded JSPI build -- wasm atomics TLS segment but no
+# -pthread runtime. Keeps Rust build-std +atomics (GECKO_ST is NOT set), uses
+# -matomics -mbulk-memory in CFLAGS below (NOT -pthread). Own objdir.
+if [ "${GECKO_STJ:-}" = "1" ]; then
+  mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-emscripten-stj
+elif [ "${GECKO_ST:-}" = "1" ]; then
+  mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-emscripten-st
+elif [ "${GECKO_RELEASE:-}" = "1" ]; then
   mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-emscripten-release
 else
   mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-emscripten
@@ -57,9 +69,22 @@ ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOM
 # missing FT_Done_MM_Var / variable fonts / COLRv1). tree_freetype is enabled
 # for EMSCRIPTEN in toolkit/moz.configure; expose the headers globally so every
 # dir resolves <ft2build.h> to the in-tree copy, and link the in-tree lib.
-export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
-export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
-export LDFLAGS="-pthread"
+# Thread model in CFLAGS:
+#   threaded (default/RELEASE): -pthread (Web Workers + shared memory + TLS + atomics).
+#   ST=1  : nothing (truly single-threaded, no atomics, thread_local = shared global).
+#   STJ=1 : -matomics -mbulk-memory (wasm atomics TLS SEGMENT for per-fiber TLS, but
+#           NO -pthread runtime). The final embedder link adds -Wl,--shared-memory to
+#           emit __tls_base/__wasm_init_tls, then patches the memory non-shared (no SAB).
+if [ "${GECKO_STJ:-}" = "1" ]; then
+  _THREADFLAGS="-matomics -mbulk-memory"
+elif [ "${GECKO_ST:-}" = "1" ]; then
+  _THREADFLAGS=""
+else
+  _THREADFLAGS="-pthread"
+fi
+export CFLAGS="-I$topsrcdir/modules/freetype2/include $_THREADFLAGS"
+export CXXFLAGS="-I$topsrcdir/modules/freetype2/include $_THREADFLAGS"
+export LDFLAGS="$_THREADFLAGS"
 
 CC=emcc
 CXX=em++
