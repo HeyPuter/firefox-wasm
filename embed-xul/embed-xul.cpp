@@ -335,6 +335,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       // (openSignedAppFileAsync) never completes in this wasm build -> install hangs
       // forever at "Verifying". This pref keeps the requirement consistent with that.
       mozilla::Preferences::SetBool("xpinstall.signatures.required", false);
+      // During install, XPIInstall.loadManifest fetches the add-on's AMO metadata
+      // (AddonRepository.cacheAddons -> a network request to addons.mozilla.org). Over
+      // WISP that request never returns, so the install hangs forever at "Verifying"
+      // (right after loadManifest, before staging). Disable the AMO metadata cache so
+      // cacheAddons/getCachedAddonByID short-circuit (no fetch); the add-on installs
+      // without ratings/screenshots metadata, which we don't use.
+      mozilla::Preferences::SetBool("extensions.getAddons.cache.enabled", false);
       printf("xul_init: forced non-remote tabs + extensions (single process)\n");
       fflush(stdout);
     }
@@ -988,6 +995,18 @@ static bool xul_load(const char* url, int width, int height) {
           "try{ChromeUtils.importESModule('resource:///modules/"
           "AboutNewTabResourceMapping.sys.mjs').AboutNewTabResourceMapping.init();}"
           "catch(e){console.error('AboutNewTabResourceMapping.init: '+e);}"
+          // Register ExtensionsUI's observers. It's the listener for
+          // "webextension-permission-prompt" (fired by AddonManager during an
+          // install) -- it shows the permission doorhanger and resolves the
+          // install's promptHandler when the user clicks Add. BrowserGlue normally
+          // calls ExtensionsUI.init(); without it the notification has no observer,
+          // promptHandler's promise never resolves, and the install hangs forever at
+          // "Verifying". init() addObserver's synchronously (before its first await),
+          // so the prompt works even though the later delayedStartupPromise await may
+          // reject in this minimal embedding (harmless).
+          "try{ChromeUtils.importESModule('resource:///modules/"
+          "ExtensionsUI.sys.mjs').ExtensionsUI.init();}"
+          "catch(e){console.error('ExtensionsUI.init: '+e);}"
           // Round popup/menu corners like desktop Firefox. The headless/other-platform
           // theme leaves them square; register an agent !important sheet (beats author
           // rules) so menupopups and panels get a small radius. Our compositor paints
