@@ -49,29 +49,7 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          swap-storage: false   # keep the existing swap; we replace it with a big one below
-
-      - name: Add swap (the -O3 relink / wasm-opt over the ~245 MB module can exceed 16 GB RAM)
-        run: |
-          # Hosted runners have 16 GB RAM and only a ~4 GB swapfile, so the final
-          # emcc relink (wasm-opt passes over the whole module) + the engine LTO link
-          # OOM-kill. Put a big swapfile on /mnt — the large ephemeral SSD (~75 GB),
-          # which is SEPARATE from the objdir on / — so the spike pages out instead.
-          echo "=== before ==="; free -h; swapon --show || true; df -h / /mnt || true
-          SWAP=/mnt/swapfile
-          SIZE_GB=32
-          sudo swapoff -a || true            # drop the default 4 GB swap (also on /mnt)
-          sudo rm -f "$SWAP"
-          # fallocate is instant on ext4; fall back to dd if swapon rejects it (holes).
-          sudo fallocate -l ${SIZE_GB}G "$SWAP" || \
-            sudo dd if=/dev/zero of="$SWAP" bs=1M count=$((SIZE_GB*1024)) status=progress
-          sudo chmod 600 "$SWAP"
-          sudo mkswap "$SWAP"
-          sudo swapon "$SWAP" || { sudo rm -f "$SWAP"; \
-            sudo dd if=/dev/zero of="$SWAP" bs=1M count=$((SIZE_GB*1024)) status=progress; \
-            sudo chmod 600 "$SWAP"; sudo mkswap "$SWAP"; sudo swapon "$SWAP"; }
-          sudo sysctl -w vm.swappiness=100   # actually use swap under pressure
-          echo "=== after ==="; free -h; swapon --show
+          swap-storage: true 
 
       - name: Install build prerequisites (clang/libclang for bindgen, etc.)
         run: |
