@@ -23,7 +23,7 @@ async function one(port,qs){
 (async()=>{
  const {server,port}=await startBenchServer(0);
  const med=a=>{const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)];};
- const arms={inline:"?env.GECKO_WJVS_INLINE=1", inlineNoCF:"?env.GECKO_WJVS_INLINE=1&env.GECKO_WJVS_NOCF=1", jit:"?x=0", mono:"?x=0&env.GECKO_WJVS_NOPOLYCALL=1", monoprop:"?x=0&env.GECKO_WJVS_NOPOLYPROP=1", nolen:"?x=0&env.GECKO_WJVS_NOLEN=1", unbox:"?x=0&env.GECKO_WJVS_UNBOX=1", tloc:"?x=0&env.GECKO_WJVS_UNBOX=1&env.GECKO_WJVS_TYPEDLOC=1", off:"?env.GECKO_NOWASMJIT=1"};
+ const arms={inline:"?env.GECKO_WJVS_INLINE=1", inlineNoCF:"?env.GECKO_WJVS_INLINE=1&env.GECKO_WJVS_NOCF=1", jit:"?x=0", mono:"?x=0&env.GECKO_WJVS_NOPOLYCALL=1", monoprop:"?x=0&env.GECKO_WJVS_NOPOLYPROP=1", nolen:"?x=0&env.GECKO_WJVS_NOLEN=1", unbox:"?x=0&env.GECKO_WJVS_UNBOX=1", tloc:"?x=0&env.GECKO_WJVS_UNBOX=1&env.GECKO_WJVS_TYPEDLOC=1", noaliased:"?x=0&env.GECKO_WJVS_NOALIASED=1", aliasedunbox:"?x=0&env.GECKO_WJVS_UNBOX=1", off:"?env.GECKO_NOWASMJIT=1"};
  const which=(process.env.ARMS||"inline,inlineNoCF,jit,off").split(",");
  const res={}; which.forEach(k=>res[k]=[]);
  for(let i=0;i<N;i++){ let line="iter"+i;
