@@ -1217,9 +1217,17 @@ static void gpu_present(int width, int height) {
 // via HeadlessWidget::ShouldUseOffMainThreadCompositing) so they never present to
 // the single page <canvas> and fight the main window's compositor. Instead we
 // paint the visible popups here into a transparent, canvas-sized BGRA buffer that
-// the JS side draws onto a 2D overlay canvas stacked over the WebGL canvas. The
-// buffer is a reused static (caller must NOT free it). Returns null when no popup
-// is open, which tells JS to clear the overlay.
+// the JS side draws onto a 2D overlay canvas stacked over the WebGL canvas. Returns
+// null when no popup is open, which tells JS to clear the overlay.
+//
+// OWNERSHIP: the returned buffer MUST be a fresh heap allocation -- the command
+// loop stores it in g_cmd->result and free()s g_cmd->result at the start of the
+// next command. A previous version returned a reused static buffer, which the loop
+// then free()d every frame: gpu_present's PaintSynchronously/PumpEvents reallocated
+// into that freed region, the next frame memset+painted into it (use-after-free)
+// and re-freed it (double-free), corrupting the heap. The fault surfaced far away
+// (e.g. the GC write barrier hitting "unreachable") and only in GPU mode, since the
+// software path (xul_paint) already calloc's a fresh buffer each frame.
 static uint8_t* paint_popup_overlay(int width, int height) {
   using namespace mozilla;
   using namespace mozilla::gfx;
@@ -1234,26 +1242,20 @@ static uint8_t* paint_popup_overlay(int width, int height) {
 
   size_t need = (size_t)width * (size_t)height * 4;
   if (need == 0) return nullptr;
-  static uint8_t* s_buf = nullptr;
-  static size_t s_cap = 0;
-  if (need > s_cap) {
-    free(s_buf);
-    s_buf = (uint8_t*)malloc(need);
-    s_cap = s_buf ? need : 0;
-  }
-  if (!s_buf) return nullptr;
-  memset(s_buf, 0, need);  // fully transparent backdrop
+  uint8_t* buf = (uint8_t*)calloc(need, 1);  // zero == fully transparent backdrop
+  if (!buf) return nullptr;
 
   int32_t stride = width * 4;
   RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
-      BackendType::SKIA, s_buf, IntSize(width, height), stride,
+      BackendType::SKIA, buf, IntSize(width, height), stride,
       SurfaceFormat::B8G8R8A8);
-  if (!dt) return nullptr;
+  if (!dt) { free(buf); return nullptr; }
   UniquePtr<gfxContext> ctx = gfxContext::CreateOrNull(dt);
-  if (!ctx) return nullptr;
+  if (!ctx) { free(buf); return nullptr; }
   int n = composite_visible_popups(ctx.get(), ps, width, height,
                                    AppUnitsPerCSSPixel());
-  return n > 0 ? s_buf : nullptr;
+  if (n <= 0) { free(buf); return nullptr; }  // popups vanished mid-paint
+  return buf;  // caller stores in g_cmd->result and free()s it next command
 }
 
 // Per-page caches of encoded resource data URLs, cleared on navigation (xul_load).
