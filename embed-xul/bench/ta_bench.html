@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// Typed-array numeric kernel: pure Float64Array/Int32Array element math in a tight
+// loop (no objects, no calls) -- the workload a JS->wasm JIT should excel at once it
+// inlines typed-array element access (raw unboxed loads, no NaN-boxing, no barrier).
+// Reports TASCORE = element-iterations / millisecond (higher = faster) + a checksum
+// so a wrong result is caught.
+function fkernel(a, b, n) {       // a,b Float64Array
+  var s = 0.0;
+  for (var i = 0; i < n; i = i + 1) {
+    var v = a[i] * 1.000001 + b[i] * 0.5;
+    a[i] = v;
+    s = s + v;
+  }
+  return s;
+}
+function ikernel(a, n) {          // a Int32Array
+  var s = 0;
+  for (var i = 0; i < n; i = i + 1) {
+    var v = (a[i] * 3 + 7) & 0x3fffffff;
+    a[i] = v;
+    s = (s + v) | 0;
+  }
+  return s;
+}
+
+var N = 4096;
+var fa = new Float64Array(N), fb = new Float64Array(N);
+var ia = new Int32Array(N);
+for (var k = 0; k < N; k++) { fa[k] = k * 0.5 + 1; fb[k] = N - k; ia[k] = k; }
+
+var REPS = 12000;
+// warmup (trigger compile + Mode VS recompile)
+for (var w = 0; w < 200; w++) { fkernel(fa, fb, N); ikernel(ia, N); }
+
+var fs = 0.0, is = 0;
+var t = performance.now();
+for (var r = 0; r < REPS; r++) { fs = fkernel(fa, fb, N); }
+var fms = performance.now() - t;
+t = performance.now();
+for (var r = 0; r < REPS; r++) { is = ikernel(ia, N); }
+var ims = performance.now() - t;
+
+var fscore = Math.round((REPS * N) / fms);
+var iscore = Math.round((REPS * N) / ims);
+var okf = isFinite(fs) && fs !== 0;
+var oki = (is | 0) === is && is !== 0;
+document.title = "TASCORE=" + (fscore + iscore) + " f=" + fscore + " i=" + iscore +
+  " okf=" + okf + " oki=" + oki + " fs=" + fs.toFixed(2) + " is=" + is;
+</script></body></html>

@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// METHOD_INLINING Phase A correctness test. addX() is Mode VS (mutating this.s + a
+// method call), so after warmup it recompiles with leaf inlining and inlines pt.getX()
+// (a 0-local straight-line leaf: `return this.x_`). A wrong slot map would corrupt a.s.
+function Pt(x){ this.x_ = x; }
+Pt.prototype.getX = function(){ return this.x_; };
+function Acc(){ this.s = 0; }
+Acc.prototype.addX = function(pt){ this.s = this.s + pt.getX(); };
+
+var a = new Acc();
+var pts = [];
+for (var i = 0; i < 100; i++) pts.push(new Pt(i));
+
+var ITERS = 5000000;
+var t = performance.now();
+for (var i = 0; i < ITERS; i++) a.addX(pts[i % 100]);
+var ms = performance.now() - t;
+
+var expected = (ITERS / 100) * (99 * 100 / 2);  // sum over a full cycle of 0..99
+document.title = "INLINE ok=" + (a.s === expected) + " s=" + a.s + " exp=" + expected
+  + " ms=" + ms.toFixed(1);
+</script></body></html>
