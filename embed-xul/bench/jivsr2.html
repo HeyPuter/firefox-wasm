@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// Focused Mode VS GC-safety acid test. The DRIVER run() uses `new Node(i)`, whose
+// JSOp::New/IsConstructing the JIT can't compile -> run() stays in the INTERPRETER
+// (so Mode V's untraced-operand-stack path is NOT exercised here). Only inner() is
+// JIT'd (Mode VS): it holds `node` (a fresh NURSERY object) on its operand stack
+// across the alloc() call, which allocates heavily and forces a minor GC that can
+// move `node`. This isolates Mode VS's spill/reload of an object Value across a
+// safepoint -- the exact thing MODE_VS_REGALLOC must keep GC-safe.
+function Node(v){ this.acc = v; this.tag = v + 1; }
+function alloc(n){ var s = 0; for (var i = 0; i < n; i++){ s = s + ({v:i}).v; } return s; }
+function inner(node, n){ node.acc = node.acc + alloc(n); return node.acc; }
+function run(iters, n){
+  var total = 0;
+  for (var i = 0; i < iters; i++){
+    var node = new Node(i);
+    total = total + inner(node, n);
+  }
+  return total;
+}
+var ITERS = 200000, N = 20;
+var warm = run(2000, N);
+var t = performance.now();
+var total = run(ITERS, N);
+var ms = performance.now() - t;
+var allocSum = N * (N - 1) / 2;
+var expected = ITERS * (ITERS - 1) / 2 + ITERS * allocSum;
+var warmExpected = 2000 * (2000 - 1) / 2 + 2000 * allocSum;
+var ok = (total === expected) && (warm === warmExpected);
+document.title = "VSR2 ok=" + ok + " total=" + total + " exp=" + expected
+  + " warm=" + (warm === warmExpected) + " ms=" + ms.toFixed(1);
+</script></body></html>

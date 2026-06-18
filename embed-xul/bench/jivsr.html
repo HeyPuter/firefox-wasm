@@ -1,0 +1,43 @@
+<!doctype html><html><head><meta charset=utf-8><title>start</title></head><body>
+<script>
+// MODE_VS_REGALLOC GC-safety acid test. step() holds an OBJECT Value (the SetProp
+// receiver `node`) on the operand stack ACROSS a call to alloc(), which allocates
+// heavily -> forces nursery GC while a live object pointer is on the (register)
+// operand stack. A wrong spill/reload would read/write a moved-from location and
+// corrupt the result (the wasm validator cannot catch this -- only the exact
+// total can). node is a FRESH nursery object each iteration, so a minor GC during
+// alloc() can tenure/move it.
+
+// Not JIT-able (object literal each iter) -> runs in the interpreter and allocates
+// freely, triggering GCs. Returns sum_{0..n-1} i = n*(n-1)/2.
+function alloc(n){ var s = 0; for (var i = 0; i < n; i++){ s = s + ({v:i}).v; } return s; }
+
+function makeNode(v){ return { acc: v, tag: v + 1 }; }
+
+// Mutating + hasCall -> Mode VS. `node.acc = node.acc + alloc(n)` keeps `node`
+// (an object) on the operand stack across the alloc() safepoint.
+function step(node, n){ node.acc = node.acc + alloc(n); return node.acc; }
+
+function run(iters, n){
+  var total = 0;
+  for (var i = 0; i < iters; i++){
+    var node = makeNode(i);
+    total = total + step(node, n);
+  }
+  return total;
+}
+
+var ITERS = 200000, N = 20;
+// Warm up step()/run() past the JIT threshold first (smaller counts).
+var warm = run(2000, N);
+var t = performance.now();
+var total = run(ITERS, N);
+var ms = performance.now() - t;
+// expected = sum_{i<ITERS} (i + N*(N-1)/2)
+var allocSum = N * (N - 1) / 2;
+var expected = ITERS * (ITERS - 1) / 2 + ITERS * allocSum;
+var warmExpected = 2000 * (2000 - 1) / 2 + 2000 * allocSum;
+var ok = (total === expected) && (warm === warmExpected);
+document.title = "VSR ok=" + ok + " total=" + total + " exp=" + expected
+  + " warm=" + (warm === warmExpected) + " ms=" + ms.toFixed(1);
+</script></body></html>
