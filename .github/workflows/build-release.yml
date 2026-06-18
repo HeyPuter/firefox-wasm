@@ -35,21 +35,21 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: firefox
     timeout-minutes: 350
     steps:
       - name: Checkout the embedder + build harness (this repo)
         uses: actions/checkout@v4
 
-      - name: Free up disk space (Gecko objdir is ~26 GB)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true 
+      # - name: Free up disk space (Gecko objdir is ~26 GB)
+      #   uses: jlumbroso/free-disk-space@main
+      #   with:
+      #     tool-cache: true
+      #     android: true
+      #     dotnet: true
+      #     haskell: true
+      #     large-packages: true
+      #     swap-storage: true 
 
       - name: Install build prerequisites (clang/libclang for bindgen, etc.)
         run: |
