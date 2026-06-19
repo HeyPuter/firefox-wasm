@@ -29,5 +29,9 @@ done
 
 echo ">> relinking web build ($(date +%H:%M:%S)) ..."
 TARGET=web bash "$HERE/build-embed-full.sh" 2>&1 | grep -E "compiling|error:|link rc=|pthread-fwd"
-echo ">> done ($(date +%H:%M:%S))"
-ls -la "$HERE/gecko.wasm" | awk '{print $5,$6,$7,$8}'
+rc=${PIPESTATUS[0]}   # exit of build-embed-full.sh, not grep's
+echo ">> done ($(date +%H:%M:%S)) rc=$rc"
+ls -la "$HERE/gecko.wasm" 2>/dev/null | awk '{print $5,$6,$7,$8}'
+# A failed relink must fail the caller (make web/release) so the error surfaces
+# here -- not as a missing gecko.js in the downstream packaging step.
+[ "$rc" = 0 ] || { echo "!! web relink failed -- see embed-xul/link.err"; exit "$rc"; }

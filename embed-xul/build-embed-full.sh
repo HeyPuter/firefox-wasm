@@ -161,6 +161,12 @@ else
   OUT="$HERE/gecko.js"
 fi
 
+# wasm-opt walks the module's AST recursively. Over a ~250MB module the default
+# 8MB stack overflows and wasm-opt dies with SIGSEGV (-11) -- distinct from the
+# OOM-killer's SIGKILL (-9), which the swapfile already guards. Lift the stack
+# limit (soft up to the hard cap, usually unlimited) so the -O3 pass survives.
+ulimit -s unlimited 2>/dev/null || ulimit -s 524288 2>/dev/null || true
+
 echo ">> [$TARGET] linking embed-xul + libxul (477MB) + glue -> $OUT (slow)"
 em++ "$HERE/embed-xul.o" "$HERE/libxul.o" "${LOOSE[@]}" "${EXTRA[@]}" \
   "${EMSETTINGS[@]}" -o "$OUT" 2> "$HERE/link.err"
@@ -178,10 +184,14 @@ echo "=== other errors ==="; grep -iE "error" "$HERE/link.err" | grep -ivE "unde
 # emscripten). Non-release builds remove any stale .zst/manifest so the frontend
 # stays on the uncompressed path.
 if [ "$TARGET" = web ]; then
-  if [ "${GECKO_RELEASE:-}" = "1" ] && [ "$rc" = 0 ] && command -v zstd >/dev/null; then
+  if [ "${GECKO_RELEASE:-}" = "1" ] && [ "$rc" = 0 ]; then
+    # zstd is required for the release path; without it the frontend has no
+    # compressed assets to download. Fail loudly rather than silently shipping
+    # an uncompressed-only build that the packaging step then can't find.
+    command -v zstd >/dev/null || { echo "!! zstd not found -- install zstd for the release build"; exit 1; }
     echo ">> [release] zstd --ultra -22 gecko.wasm + gecko.data"
-    zstd -q -f --ultra -22 "$HERE/gecko.wasm" -o "$HERE/gecko.wasm.zst"
-    zstd -q -f --ultra -22 "$HERE/gecko.data" -o "$HERE/gecko.data.zst"
+    zstd -q -f --ultra -22 "$HERE/gecko.wasm" -o "$HERE/gecko.wasm.zst" || { echo "!! zstd gecko.wasm failed"; exit 1; }
+    zstd -q -f --ultra -22 "$HERE/gecko.data" -o "$HERE/gecko.data.zst" || { echo "!! zstd gecko.data failed"; exit 1; }
     printf '{"compressed":true,"wasm":%s,"data":%s}\n' \
       "$(stat -c%s "$HERE/gecko.wasm")" "$(stat -c%s "$HERE/gecko.data")" \
       > "$HERE/gecko-assets.json"
@@ -190,3 +200,9 @@ if [ "$TARGET" = web ]; then
     rm -f "$HERE/gecko.wasm.zst" "$HERE/gecko.data.zst" "$HERE/gecko-assets.json"
   fi
 fi
+
+# Propagate the emcc link result. Without this the script falls off the end at 0
+# even when the link failed, so a failed relink masquerades as a "cannot stat
+# gecko.js" error in the much later packaging step instead of failing here with
+# embed-xul/link.err visible.
+exit "$rc"

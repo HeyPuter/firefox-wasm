@@ -55,7 +55,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang llvm-dev libclang-dev libpulse-dev python3 mercurial unzip
+            clang llvm-dev libclang-dev libpulse-dev python3 mercurial unzip zstd
           # mozconfig.full.emscripten reads $LIBCLANG_PATH for --with-libclang-path.
           echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
 
@@ -89,7 +89,18 @@ jobs:
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
       - name: "Build (release: engine LTO + wasm-opt + zstd) — long"
-        run: make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink (-O3) -> zstd
+        run: |
+          # wasm-opt's recursive passes overflow the default 8MB stack on the
+          # ~250MB module and die with SIGSEGV. Raise the stack limit for the
+          # whole make -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
+          ulimit -s unlimited || ulimit -s 524288 || true
+          make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink (-O3) -> zstd
+
+      - name: Show link errors on failure
+        if: failure()
+        run: |
+          echo "=== embed-xul/link.err (tail) ==="
+          tail -n 60 embed-xul/link.err 2>/dev/null || echo "(no link.err)"
 
       - name: Package the runtime artifacts (compressed)
         run: |
