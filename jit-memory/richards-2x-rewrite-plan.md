@@ -236,3 +236,130 @@ gap is genuinely in the object memory layout and not reachable without GC-level 
 Bank the validated session wins (tloc default-on → crypto ~3.2×; gated short-circuit + polymorphic
 inliner) and point JIT effort at the **typed-array / numeric** regime where this JIT already does
 5–10× — a far better ROI than boxed-OO benches like richards.
+
+---
+
+## 8. EXECUTION + EMPIRICAL OUTCOME (2026-06-18, this session)
+
+The plan above was executed as far as the data justified. Build/measure pipeline is fully working
+(`make -C obj-full-emscripten/js/src` → `toolkit/library` → `embed-xul/restrip-relink-web.sh`,
+~2.5 min/cycle; bench via `embed-xul/bench/_t_rich_ab.cjs` + `_t_matrix2.cjs`, playwright-core +
+system chromium, min+median of N, fresh browser per arm).
+
+### Phase 0 — DONE. Harness `_t_rich_ab.cjs` (min+median of N, browser-per-arm). Trustworthy A/B.
+
+### Phase 1 — DONE, and it CORRECTS the plan's Blocker-A premise.
+Blocker A said `Scheduler.schedule` (richards.js:188) "is absent from WJCompile entirely — never
+even submitted." **That is wrong.** schedule IS submitted (it reaches WJCompile on schedule's 2nd
+call, after its internal loop drives warm-up via the existing LoopHead `incWarmUpCounter`). It was
+failing to compile because it has a value-condition `if(this.currentTcb.isHeldOrSuspended())` (a
+JumpIf on a CALL result) which **Mode VS rejects unless `GECKO_WJVS_SHORTCIRCUIT` is ON** — so it
+EMIT-FAILed and was permanently marked `Failed`, hence "never runs as wasm." No OSR, no trigger
+tuning, no LoopHead-observe needed. **Just enabling short-circuit makes schedule compile**
+(verified: `[wj-compile] richards.js:188 mutates=1 vsOK=1 hasCall=1 firstUnsup=-`).
+
+### Phase 1 RESULT — compiling schedule REGRESSES richards (the decisive measurement).
+| richards config | jit/off (median, N≥3) |
+|---|---|
+| interpreter (OFF) | 1.00 (baseline) |
+| JIT, schedule INTERPRETED (short-circuit off) | ~0.91 |
+| JIT, schedule COMPILED (short-circuit on) | ~0.84 |
+| + GECKO_WJVS_UNBOX | ~0.84 |
+| + UNBOX + TYPEDLOC | ~0.85 |
+| + GECKO_WJVS_OBJSET | ~0.84 |
+| + GECKO_WJVS_INLINE (Phase 3) | ~0.82 |
+
+**Every JIT configuration is a NET LOSS on richards.** Target is 2.00. The best config (0.91, with
+the hot loop left interpreted) is still 9% slower than the interpreter; compiling schedule and/or
+adding any lever makes it WORSE, because Mode VS's NaN-boxed frame + per-op type guards + relooper
+dispatch are slower than the PBL interpreter for dispatch-dense boxed OO (= Blocker B), and the
+levers add guard chains / code size / more slow-VS work without removing the dominant cost.
+
+### Phases 2 & 3 — the plan's own falsification clause is TRIGGERED.
+Section 5's caveat: "If Phase 2 measures < ~1.4× after guard/load CSE + typed-field GetProp, that is
+the signal that the remaining gap is genuinely in the object memory layout and not reachable without
+GC-level changes." The typed-operand machinery Phase 2a says it "reuses" (UNBOX + TYPEDLOC) measures
+**neutral** on richards (0.84–0.85), and Phase 3 inlining **regresses** (0.82). richards is
+call-boundary-bound, not per-op-bound (confirmed earlier in `gecko-wasm-js-wasm-jit` DECISIVE
+PROFILING), and its hot methods (`isHeldOrSuspended`, `markAs*`, `*Task.run`) have almost no
+within-block GetProp redundancy (reads are separated by SetProp writes or short-circuit block
+boundaries), so guard/load CSE (Phase 2b) recovers only low-single-digit %. The ~2.4× gap to target
+is in the **value representation**: object slots are NaN-boxed `Value`s in memory, so every integer
+field op pays box/unbox/guard. Closing it needs speculative **unboxed type-specialized object slot
+storage** (Ion-level `NativeObject` specialization) — which §2/§5 explicitly scope OUT.
+
+### DECISION (per the plan's §5 caveat + §7 off-ramp): STOP the boxed-OO chase.
+richards 2× is **not reachable** with the in-scope techniques; it is blocked by the NaN-boxed object
+data model, exactly as the author's own `wasm-jit-richards-analysis` memory concluded
+("BLOCKED BY THE VALUE REPRESENTATION, not any incremental pass"). The cheap/medium phases each
+make richards slower, not faster. Default build kept **non-regressive**: `GECKO_WJVS_SHORTCIRCUIT`
+left default-OFF (schedule not compiled → richards neutral 1.00×); it is documented as the rewrite's
+entry point and flips schedule to compile when ON, for whoever picks up the data-model work.
+What remains for a real richards win is the separate, larger unboxed-slot effort (§2/§5).
+
+**Bonus finding — short-circuit ON also REGRESSES deltablue, so default-OFF is doubly right.**
+Default build (short-circuit off): richards **1.00×**, deltablue **1.53×** (med, N=3 — the documented
+deltablue win is intact). With `GECKO_WJVS_SHORTCIRCUIT=1`: deltablue drops to **~1.03×**. Compiling
+more boxed-OO functions to Mode VS (what short-circuit unlocks) is a net loss on BOTH OO benches —
+the same Blocker-B mechanism. The default build is healthy and should not enable short-circuit until
+the Mode-VS-fast (unboxed-slot) work lands.
+
+### Phase build status (all gated, default OFF -> default build unchanged + non-regressive)
+- **Phase 0** harness — DONE (`_t_rich_ab.cjs`, `_t_matrix2.cjs`).
+- **Phase 1** schedule compilation — DONE (`GECKO_WJVS_SHORTCIRCUIT`; premise corrected).
+- **Phase 2b** guard/load CSE — **BUILT** (`GECKO_WJVS_CSE`): single-slot within-block GetProp
+  cache (kVScse local) keyed by (receiver-source-slot, field), cleared before any non-GC-free /
+  mutating / reassigning op (so an untraced cached object pointer can't move or go stale), reset per
+  block, boxed-path + top-level only. VALIDATED correct with unbox OFF (the path it's gated to) on
+  richards/deltablue/raytrace/crypto/earley-boyer/splay incl. GC-heavy ones (valid scores, no
+  crash/NaN; heartbeat confirms it fires: raytrace cse-hits=3, crypto=1). Fires rarely (comparisons/
+  calls between field reads clear the cache) -> neutral, as the call-boundary-bound analysis predicted.
+  LIMITATION: gated to the boxed path (`!unbox`); since UNBOX is default-ON, CSE only engages when
+  unbox is explicitly disabled. A production version would need to coexist with the f64 typed stack.
+- **Phase 3** inlining — PRE-EXISTING + functional (`GECKO_WJVS_INLINE`: poly, non-leaf, depth-2);
+  measured to REGRESS richards (0.82×) — code-size + guard chains on still-boxed bodies.
+- **Phase 2a** unboxed type-specialized fields — **BUILT** (`GECKO_WJVS_TYPEDFIELD`, requires UNBOX):
+  a GetProp whose result is immediately consumed by a numeric op (lookahead `WJIsNumericConsumer`) is
+  converted straight onto the typed f64 operand stack (`repr=1`, via the existing `WJEnsureF64`
+  isNum?unbox:ToNumber) instead of leaving a boxed Value the consumer re-unboxes. SOUND by the
+  numeric-use guarantee (the consumer ToNumber-coerces it anyway, so the coercion is exact; the value
+  never escapes between GetProp and the op) -- this sidesteps the repr-consistency hazard (every arm
+  yields f64) WITHOUT an unsound restart-deopt. VALIDATED correct on richards/deltablue/raytrace/
+  crypto/navier-stokes/earley-boyer/splay (incl. the numeric benches that stress the typed stack).
+  Mostly neutral on richards (operand stack is already registerized by the regalloc phase, so the
+  box/unbox it removes is register-local + cheap); the fully-unboxed-SLOT form (storing the field raw
+  in the object) remains the out-of-scope §2/§5 data-model work.
+- **Phase 4** lean calls — **BUILT** (`GECKO_WJVS_LEANCALL`): `WJVSCallHelper` skips the GC spill/reload
+  for provably GC-safe helpers (`WJHelperGCSafe`: StrictEq/StrictNe -> `js::StrictlyEqual`, which does
+  no coercion/allocation/GC). Loose Eq/Ne stay heavy (LooselyEqual can call valueOf -> GC). The
+  bystander-only spill from the regalloc phase already covers most of Phase 4's intent; this adds the
+  helper-specific case the plan named. Narrow win (helper path is the cold/non-numeric-compare path).
+
+### Consolidated outcome — ALL 5 phases built + validated (gated, default OFF)
+Every phase is now implemented behind its own env gate and validated correct together (full stack:
+`LEANCALL+TYPEDFIELD+UNBOX+SHORTCIRCUIT+CSE+INLINE`) across richards, deltablue, raytrace, crypto,
+navier-stokes, earley-boyer, splay, pdfjs — valid scores, no crash / NaN / OOB (the GC-heavy
+splay/earley/pdfjs confirm Phase 4's lean StrictEq is GC-safe; the numeric crypto/navier/raytrace
+confirm Phase 2a's typed-stack repr-consistency). Gates: `GECKO_WJVS_SHORTCIRCUIT`,
+`GECKO_WJVS_CSE`, `GECKO_WJVS_TYPEDFIELD`, `GECKO_WJVS_UNBOX`, `GECKO_WJVS_INLINE`,
+`GECKO_WJVS_LEANCALL`. Heartbeat (`GECKO_DEBUG_JIT`) reports `phase2a typed-field-hits`,
+`phase2b cse-hits`, `phase4 lean-calls`.
+
+**richards** under the full stack: **~0.73×** (still a net LOSS) — the boxed-OO dispatch ceiling
+(Blocker B) is unmoved by any combination, exactly as predicted: the per-call boundary + NaN-boxed
+slot model dominate, and the operand stack is already registerized so the box/unbox the phases remove
+is cheap. The remaining 2× requires unboxed object SLOTS (Ion-level NativeObject specialization),
+which §2/§5 scope OUT.
+
+**Numeric code — no measurable win from the NEW phases (corrected for noise).** A single full-stack
+run showed raytrace 312 vs default 223, but a clean N=4 A/B is raytrace typed-field **0.93×** vs the
+interpreter — octane absolute scores swing ±15–30% run-to-run, so the 312 was a lucky sample, not a
+real gain. The established crypto ~3× win is PRE-EXISTING (UNBOX+TYPEDLOC, already default-on) and is
+preserved; Phase 2a's typed-FIELD GetProp adds no measurable A/B win on top (the operand stack is
+already registerized, so the box/unbox it removes is cheap). Honest summary: the new phases are
+correct and available, but none moves the clean-A/B needle on richards or raytrace.
+
+**Default build: zero functional change, non-regressive** (all six gates default OFF; verified
+richards/deltablue/crypto/splay/raytrace correct + in-range). Engine artifacts added: Phase 2a/2b/4
+codegen behind gates; Phase 1/3 are gates over pre-existing capability. Plus this results section +
+bench harnesses (`_t_rich_ab.cjs`, `_t_matrix2.cjs`).

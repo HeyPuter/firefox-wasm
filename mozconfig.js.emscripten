@@ -10,6 +10,11 @@ ac_add_options --disable-jit
 ac_add_options --disable-shared-js
 ac_add_options --disable-shared-memory
 
+# Portable Baseline Interpreter: required so the JS->wasm JIT's PBL hooks + Phase F
+# deopt-resume (WasmJitResumeViaPBL) are compiled (matches the full Gecko build).
+ac_add_options --enable-portable-baseline-interp
+ac_add_options --enable-portable-baseline-interp-force
+
 # Trim heavy deps for the first build.
 ac_add_options --without-intl-api
 ac_add_options --without-system-zlib
@@ -25,3 +30,7 @@ CC=emcc
 CXX=em++
 HOST_CC=clang
 HOST_CXX=clang++
+
+# GC zeal: lets the embedder force incremental marking (JS_SetGCZeal) to VALIDATE the
+# allocation feature inline shape-transition pre-barrier (plan §8.3b/d). zeal-off ~= release perf.
+ac_add_options --enable-gczeal
