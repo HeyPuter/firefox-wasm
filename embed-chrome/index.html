@@ -106,7 +106,15 @@
       WIDTH = Math.max(1, Math.round(window.innerWidth));
       HEIGHT = Math.max(1, Math.round(window.innerHeight));
       if (gpuMode) {
-        canvas.width = WIDTH; canvas.height = HEIGHT;
+        // #screen is transferred to the WebRender Renderer thread via
+        // transferControlToOffscreen() once the engine starts; after that the main
+        // thread CANNOT set its width/height (throws InvalidStateError on every
+        // resize) -- the engine owns the offscreen canvas's size and resizes it from
+        // its GL context when the chrome window (WIDTH/HEIGHT) reflows. So only size
+        // it while we still own it (before transfer); ignore once transferred. The
+        // #popups 2D overlay is never transferred, so always resize it (and this
+        // must run even when the #screen set is skipped, hence the try/catch).
+        try { canvas.width = WIDTH; canvas.height = HEIGHT; } catch (e) {}
         popCanvas.width = WIDTH; popCanvas.height = HEIGHT; popHasContent = false;
       }
     }
@@ -435,6 +443,10 @@
         if (gpuMode) m.ENV['GECKO_GPU'] = '1';
         // Content WebGL passthrough to a real host GL context (?glpass=1).
         if (glPassMode) m.ENV['GECKO_GL_PASSTHROUGH'] = '1';
+        // Debug A/B: ?noextbg disables the WebExtension background-startup notifications.
+        if (new URLSearchParams(location.search).has('noextbg')) m.ENV['GECKO_NO_EXT_BG_STARTUP'] = '1';
+        // Debug: ?contentconsole routes content + extension-page console.* to stdout.
+        if (new URLSearchParams(location.search).has('contentconsole')) m.ENV['GECKO_CONTENT_CONSOLE'] = '1';
         const mozlog = new URLSearchParams(location.search).get('mozlog');
         if (mozlog) m.ENV['MOZ_LOG'] = mozlog;
         if (wispUrl && typeof WISP !== 'undefined') {

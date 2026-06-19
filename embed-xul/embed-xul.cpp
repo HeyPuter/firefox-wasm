@@ -34,6 +34,13 @@
 #include "nsString.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/AutoSQLiteLifetime.h"
+#include "mozilla/XREAppData.h"
+// gAppData is null in embedded contexts (we never run XRE_main), which leaves
+// Services.appinfo without the nsIXULAppInfo interface -> appinfo.version/ID/
+// buildID are undefined. We populate it below so version-gated front-end + add-on
+// code works (e.g. WebExtension compatibility, runtime.getBrowserInfo). Declared
+// in toolkit/xre/nsAppRunner.h; declared here to avoid pulling that whole header.
+extern const mozilla::XREAppData* gAppData;
 
 // Phase 4 (render) includes.
 #include "nsIAppShellService.h"
@@ -251,6 +258,22 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // MOZ_HEADLESS, so set it before any gfx init. Chrome-only to avoid touching the
   // content build's behavior.
   if (chrome) setenv("MOZ_HEADLESS", "1", 1);
+
+  // Disable e10s/Fission DETERMINISTICALLY. mozilla::BrowserTabsRemoteAutostart()
+  // defaults e10s ON and IGNORES the browser.tabs.remote.autostart pref -- its only
+  // off-switch is the MOZ_FORCE_DISABLE_E10S env var (read once via PR_GetEnv and
+  // cached). index.html sets it in Module.ENV, but that's fragile (harness drift /
+  // env not yet visible to PR_GetEnv when e10s is first computed); if it's missed,
+  // e10s turns on -> tabs + the extension background try to load REMOTE -> the child
+  // process launch hits `socketpair` (unsupported here) -> "Failed to launch tab
+  // subprocess" -> pages stick at about:blank AND the extension background MM is torn
+  // down ("Message manager was disconnected before receiving
+  // Extension:BackgroundViewLoaded"). Setting the env here in C++, on the main
+  // thread before NS_InitXPCOM (and thus before any e10s/window/tab creation),
+  // guarantees PR_GetEnv sees it. (Single process: no content/extension subprocess
+  // can exist.) The prefs set later in xul_init are belt-and-suspenders.
+  setenv("MOZ_FORCE_DISABLE_E10S", "1", 1);
+
   nsAutoCString binPath(greDir);
   if (chrome) binPath.AppendLiteral("/browser");
   nsCOMPtr<nsIFile> binDir;
@@ -272,6 +295,34 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   fflush(stdout);
 
   if (NS_SUCCEEDED(rv)) {
+    // Populate Services.appinfo (nsIXULAppInfo). XRE_main normally sets the global
+    // gAppData from the app's nsXREAppData; this minimal embedding skips XRE, so
+    // gAppData stays null -> the nsIXULAppInfo interface is not exposed and
+    // appinfo.version/ID/appBuildID are all `undefined`. That breaks version-gated
+    // logic: WebExtensions can't match a target application (isCompatible=false ->
+    // "incompatible with {app} {$version}", $version blank) and add-on background
+    // code that reads runtime.getBrowserInfo().version (e.g. uBlock Origin) gets
+    // undefined and misbehaves. Point gAppData at a static app descriptor. Values
+    // mirror a Firefox build (ID is the Firefox app id so add-ons targeting Firefox
+    // match); platformVersion/platformBuildID come from gToolkitVersion/BuildID
+    // (compile-time) once the interface is exposed. Set after NS_InitXPCOM so init
+    // itself is unaffected; appinfo consumers (AddonManager, front-end) run later.
+    // Keep in sync with browser/config/version.txt (GRE_MILESTONE / the build's
+    // app version); MOZ_APP_VERSION isn't a C macro in this embedder's compile.
+    static const char* const kAppVersion = "153.0a1";
+    static const mozilla::StaticXREAppData kStaticAppData = {
+        .vendor = "Mozilla",
+        .name = "Firefox",
+        .remotingName = "firefox",
+        .version = kAppVersion,
+        .buildID = "20990101000000",
+        .ID = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",  // Firefox application id
+    };
+    static mozilla::XREAppData sAppData(kStaticAppData);
+    gAppData = &sAppData;
+    printf("xul_init: set gAppData (appinfo version=%s)\n", kAppVersion);
+    fflush(stdout);
+
     // Initialize sqlite for mozStorage. XREMain normally constructs an
     // AutoSQLiteLifetime to call sqlite3_config()/sqlite3_initialize(); this
     // minimal embedding skips XRE, so AutoSQLiteLifetime::Init() never runs and
@@ -435,6 +486,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // the chrome default dom.max_chrome_script_run_time=0). Live StaticPrefs.
     mozilla::Preferences::SetInt("dom.max_script_run_time", 0);
     mozilla::Preferences::SetInt("dom.max_ext_content_script_run_time", 0);
+    // Diagnostic (opt-in, ?contentconsole / GECKO_CONTENT_CONSOLE=1): route
+    // content + extension-page console.* to stdout. Off by default (verbose).
+    // Chrome console already goes to stdout; extension BACKGROUND pages are
+    // "content" so their logs are otherwise invisible -- needed to see why an
+    // extension (e.g. uBlock Origin) misbehaves.
+    if (getenv("GECKO_CONTENT_CONSOLE")) {
+      mozilla::Preferences::SetBool("devtools.console.stdout.content", true);
+      printf("xul_init: devtools.console.stdout.content=true (diagnostic)\n");
+      fflush(stdout);
+    }
     // Top-level data: URL navigations are blocked by default (anti-phishing),
     // which silently aborts our LoadURI(data:...) -> the doc never leaves
     // about:blank. Allow them for this embedding.
@@ -1020,6 +1081,71 @@ static bool xul_load(const char* url, int width, int height) {
           "catch(e){console.error('round css: '+e);}"_ns);
       printf("xul_load: registered desktop JSWindowActors + rounded-popup sheet\n");
       fflush(stdout);
+
+      // Build already-installed WebExtension background pages at startup.
+      // ExtensionParent gates the APP_STARTUP background build on
+      // browserStartupPromise, which resolves from 'sessionstore-windows-restored'
+      // OR 'extensions-late-startup'. SessionStore doesn't fully run here, so a
+      // persistent background (e.g. uBlock Origin loaded from the profile at
+      // startup) never builds and its primed webRequestBlocking listener suspends
+      // every request forever (no tab loads). 'extensions-late-startup' is exactly
+      // the no-SessionStore signal ExtensionParent.sys.mjs documents; it's narrowly
+      // observed (ExtensionParent), so firing it has no other side effects.
+      // NOTE: do NOT fire 'browser-delayed-startup-finished' to resolve the
+      // browserPaintedPromise (used only for primed event-page WAKEUPS, not for
+      // persistent backgrounds): that notification makes BrowserGlue run its entire
+      // _onFirstWindowLoaded first-window init ('browser-first-window-ready'
+      // modules, profile-reset, etc.), which in this minimal embedding errors out
+      // and tries to spin up a content subprocess -> tab loads then fail
+      // (nsIWebNavigation.fixupAndLoadURIString NS_ERROR_NOT_AVAILABLE). Promises
+      // resolve async, so an onManifestEntry registering its .then() afterward
+      // still runs. Fresh installs (ADDON_INSTALL) build immediately, no signal
+      // needed. (Set GECKO_NO_EXT_BG_STARTUP to skip, for A/B debugging.)
+      //
+      // *** TIMING: fire it DEFERRED, not during chrome startup. ***
+      // Firing it here (right after browser.xhtml loads, while gBrowserInit is still
+      // running its startup) builds the background page TOO EARLY: loading the
+      // background page (fixupAndLoadURIString moz-extension://.../background.html)
+      // tears the just-created frameloader down ("message-manager-close" right after
+      // the load, uri=null) before BackgroundViewLoaded -> the background never
+      // starts -> uBlock's primed webRequestBlocking listener suspends every request
+      // -> about:blank. Proof: disabling + re-enabling the extension (which runs the
+      // SAME build() but LATE, via ADDON_ENABLE, after the chrome has settled) works.
+      // So defer the signal until the chrome window has finished its delayed startup
+      // (gBrowserInit fires 'browser-delayed-startup-finished' itself), with a
+      // timeout fallback. We only OBSERVE that notification for timing; we never fire
+      // it (firing it has the BrowserGlue side effects described above).
+      if (!getenv("GECKO_NO_EXT_BG_STARTUP")) {
+        // After the chrome has settled, (1) fire 'extensions-late-startup' so the
+        // APP_STARTUP background build is unblocked, and (2) RELOAD each active
+        // extension. (2) is the key: an extension started at APP_STARTUP has its
+        // persistent listeners PRIMED, and for at least uBlock Origin that makes
+        // loading its background page tear the frameloader down before it runs
+        // ("message-manager-close" on the background load, before
+        // Extension:BackgroundViewLoaded) -> the background never starts -> its
+        // webRequestBlocking listener suspends every request -> no tab ever loads.
+        // Manually disabling + re-enabling the extension fixes it (the restart runs
+        // via the ADDON_ENABLE path, without the APP_STARTUP priming). addon.reload()
+        // is exactly that, automated once, deferred to the settled point.
+        RunChromeScript(
+            "(function(){var fired=false;"
+            "var go=function(tag){if(fired)return;fired=true;"
+            "try{Services.obs.notifyObservers(null,'extensions-late-startup');}catch(e){}"
+            "(async function(){try{var m=ChromeUtils.importESModule("
+            "'resource://gre/modules/AddonManager.sys.mjs');"
+            "var addons=await m.AddonManager.getAddonsByTypes(['extension']);"
+            "for(var a of addons){if(a&&a.isActive&&!a.isSystem){"
+            "try{await a.reload();console.error('ext-bg-startup: reloaded '+a.id);}"
+            "catch(e){console.error('ext-bg-startup reload '+a.id+': '+e);}}}}"
+            "catch(e){console.error('ext-bg-startup reload-all: '+e);}})();"
+            "console.error('ext-bg-startup: fired+reload ('+tag+')');};"
+            "try{var o={observe:function(){try{Services.obs.removeObserver(o,"
+            "'browser-delayed-startup-finished');}catch(e){}"
+            "setTimeout(function(){go('delayed-startup');},1500);}};"
+            "Services.obs.addObserver(o,'browser-delayed-startup-finished');}catch(e){}"
+            "setTimeout(function(){go('timeout');},10000);})();"_ns);
+        fflush(stdout);
+      }
     }
   }
 
