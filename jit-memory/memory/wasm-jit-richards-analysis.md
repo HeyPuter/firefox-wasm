@@ -146,6 +146,49 @@ work provably caps at interp parity. Next lever to TEST empirically (only sound 
 hoist the this-shape guard to entry + bare this.field loads; if it (like baking) yields ~0, guards are also
 cheap and the cost is frame-memory + boxing -> confirming the full C-model rewrite is mandatory.
 
+## THE REWRITE = REUSE ION'S MIR MIDDLE-END, emit wasm instead of native (2026-06-19 checkpoint)
+Current JIT is architecturally a BASELINE JIT (template-per-bytecode, IC-guided, boxed values, frame in linear
+memory, per-op shape guards) -> caps at interp parity (the measured ceiling). The 2x win needs the ION tier:
+SSA + representation selection + guard CSE/hoist + scalar replacement. Ion's code is IN THE TREE and largely
+reusable.
+REUSE (compiled-in, ungated, JS-decoupled, ~16-21K lines = the crown jewels that produce the richards win):
+- jit/MIR.h (9.6K) + MIRGraph + MDefinition node types = the SSA IR.
+- jit/ValueNumbering.cpp (GVN = guard CSE), LICM.cpp (guard hoist), ScalarReplacement.cpp (escape analysis ->
+  flat structs for non-escaping richards Tcb/Packet/Task), AliasAnalysis.cpp. These reference NO CacheIR/
+  WarpSnapshot/JSScript -- operate purely on MIRGraph. Driven by OptimizeMIR(MIRGenerator*) in jit/Ion.cpp:956
+  which is UNGATED (no codegen #ifdef) and ALREADY DUAL-MODE (~13 mir->compilingWasm() branches that skip the
+  JS-only passes AND the snapshot/bailout machinery).
+PRECEDENT: wasm/WasmIonCompile.cpp's WasmFunctionCompiler builds MIR from non-JS bytecode with its own builder
++ helper methods (binary/add/mul/etc.) and runs OptimizeMIR -> proves the middle-end is front-end-agnostic.
+BUILD (the two ends):
+1. Front-end: JS-bytecode -> MIR. NOT WarpBuilder (13K, needs CacheIR/Warp/Oracle/full runtime). A focused
+   builder modeled on WasmFunctionCompiler, feeding MIR using MY existing IC data (gWJShapeRec shapes/offsets,
+   gWJInlineCallee call targets). Encode JS semantics as wasm-level MIR ops: shape guard = MWasmLoad(shape)+
+   MCompare+MTest; field = MWasmLoad at const offset; so GVN/LICM hoist the redundant shape-load+compare and
+   scalar-replace non-escaping objects. Build in COMPILINGWASM MODE (pass wasm CodeMetadata) -> avoids JS
+   coupling, values are wasm-typed (Int32/Double/Pointer).
+2. Back-end: MIR -> wasm bytes (NOVEL; Ion has MIR->LIR->native, wasm has wasm->MIR->native, none do MIR->wasm).
+   Walk optimized MIRGraph, emit each SSA value as a wasm local (V8/TurboFan does register allocation), CFG from
+   MIRGraph blocks (reuse my structured-CF emitter), guard-miss MTest -> my existing deopt sentinel (return 1.0,
+   re-run PBL) -> SKIP Ion snapshots/bailout entirely. Reuse my wasm-emission machinery in WasmJS.cpp.
+EXACT SETUP RECIPE (from WasmIonCompile.cpp:11384-11463 + jit/MIRGenerator.h:40):
+  LifoAlloc lifo(TempAllocator::PreferredLifoChunkSize); TempAllocator alloc(&lifo); JitContext jitContext;
+  CompileInfo compileInfo(nlocals);  // wasm ctor: explicit CompileInfo(unsigned nlocals), CompileInfo.h:128
+  MIRGraph graph(&alloc);
+  JitCompileOptions options;
+  MIRGenerator mirGen(nullptr/*CompileRealm*/, options, &alloc, &graph, &compileInfo,
+                      IonOptimizations.get(OptimizationLevel::Wasm), &codeMeta /*wasm CodeMetadata -> compilingWasm()*/);
+  // build minimal/real graph (MBasicBlock entry, MConstant, MWasmReturn), then:
+  OptimizeMIR(&mirGen);   // runs GVN/LICM/ScalarReplacement/AliasAnalysis in wasm mode
+BUILD CONFIG NOTE: the embed is JS_CODEGEN_NONE (no native backend, expected). Middle-end source is compiled in
+(jit unified objects jit3/jit14/jit9 are 1MB+; MIR/ValueNumbering/Ion in unified TUs jit6/jit9/jit14) and is
+ungated, so it should LINK + RUN (pure MIRGraph transforms, no MacroAssembler). FIRST EXECUTABLE STEP next
+session: a smoke-test that does the recipe above + a trivial graph + OptimizeMIR, wired into the embed (env-gated
+fn in WasmJS.cpp), to confirm it runs under CODEGEN_NONE (vs assert/crash). If it runs -> build front-end then
+back-end. If it asserts -> lift MIR.cpp/MIRGraph.cpp/ValueNumbering.cpp/LICM.cpp/ScalarReplacement.cpp/
+AliasAnalysis.cpp into a codegen-independent TU (no assembler deps -> mechanical). The jit headers must be
+#includable from WasmJS.cpp's TU (Unified_cpp_js_src_wasm4) -- watch include order.
+
 ## Measured (clean sequential, browsers killed between runs, _t_crashprobe.cjs)
 - richards: jit ~= off ~= 51-65 (NEUTRAL; the JIT neither helps nor hurts). Noisy +-15%.
 - deltablue: jit/off ~= 1.6x (138 vs 84) -- REAL win.
