@@ -70,7 +70,17 @@ GECKO_WJVS_NOOPT (skip OptimizeMIR), GECKO_WJVS_IONINT_ONLY, GECKO_WJVS_NOMOVE
 (non-movable loads), GECKO_WJVS_IONINT_LOG. Builder safety guards retained:
 op-count guard (2M), inline-frame guard (20k), zero-bytecode-length guard.
 
-## Not yet done
-Browser octane richards A/B (embed-xul/bench/_t_rich_ab.cjs, needs the heavy
-libxul/gecko.wasm build) for the canonical OCTSCORE — node proof is decisive but
-the browser score is the user's historical metric. See [[wasm-jit-ion-reuse]].
+## Browser confirmation (2026-06-19)
+Built the FULL browser: regenerated MIROpsGenerated.h in obj-full-emscripten
+(stale dep tracking missed the WJIonCall YAML edit -> `rm
+js/src/jit/MIROpsGenerated.h.stub && make -C obj-full-emscripten
+js/src/jit/.deps/MIROpsGenerated.h.stub`), then `make -C obj-full-emscripten/js/src`
+(recompiles ALL jit/wasm TUs since MIROpsGenerated.h is core), `make -C
+obj-full-emscripten/toolkit/library` (libxul.so), `embed-xul/restrip-relink-web.sh`
+(gecko.wasm 254MB). Octane richards A/B in headless Chromium
+(embed-xul/bench/_t_rich_ab.cjs, EXTRA="env.GECKO_WJVS_IONINT=1&" ON vs
+GECKO_NOWASMJIT=1 OFF): **JIT med OCTSCORE ~712-1101 vs interpreter ~67-73 =
+~9.7x-16x** (per-run variance from warmup/GC across fresh-browser launches; min
+ratio 9.1x). Correct (octane's internal richards check passes; valid scores, no
+crash/RuntimeError). Interpreter ~67-73 matches the user's historical baseline.
+2x ultimatum crushed by every measure. See [[wasm-jit-ion-reuse]].
