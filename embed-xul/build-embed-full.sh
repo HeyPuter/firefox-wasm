@@ -25,6 +25,15 @@ else
   EMBED_OPT=(-O0 -g0); LINK_OPT=-O0
 fi
 
+# NO_WASM_OPT=1 forces the final link to -O0 so emcc skips wasm-opt's whole-module
+# passes (which OOM/SIGSEGV on the ~250MB module). The engine keeps its own LTO +
+# --enable-optimize and the release zstd packaging still runs; only the post-link
+# wasm-opt is dropped. Temporary CI lever -- remove once wasm-opt is stable there.
+if [ "${NO_WASM_OPT:-}" = "1" ]; then
+  LINK_OPT=-O0
+  echo ">> [$TARGET] NO_WASM_OPT=1: linking at -O0 (skipping wasm-opt passes)"
+fi
+
 CXXFLAGS=(
   -std=gnu++20 -fno-exceptions -fno-rtti
   -fno-sized-deallocation -fno-aligned-new

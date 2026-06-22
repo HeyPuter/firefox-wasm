@@ -2,8 +2,8 @@
 #
 #   make firefox    shallow-clone (depth 1) the Gecko engine fork at the pinned commit
 #   make vendor     vendor the Rust std deps for -Z build-std (vendor-std-deps.py)
-#   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (auto-configures)
-#   make configure  force a reconfigure (rarely needed; `build` does it automatically)
+#   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (reconfigures only if CONFIGURE_INPUTS changed)
+#   make configure  force a reconfigure (needed after changing configure inputs outside CONFIGURE_INPUTS, e.g. re-checked-out firefox/)
 #   make web        stage GRE + relink the web build (builds the engine only if none yet)
 #   make all        firefox -> vendor -> (build if needed) -> web   (default)
 #   make run        serve the web build (server.cjs)
@@ -33,6 +33,16 @@ export GECKO_RELEASE := $(RELEASE)
 OBJDIR := $(ROOT)/obj-full-emscripten$(if $(RELEASE),-release)
 LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 
+# The files we treat as "configuration": editing one of these should force a
+# reconfigure, anything else should not. `mach build` decides on its own whether
+# to re-run configure by comparing config.status against EVERY entry in
+# $(OBJDIR)/config_status_deps.in -- 100+ files, almost all of them Gecko's
+# mach/mozbuild infra + version stamps, NOT our config. Re-checking out firefox/
+# (or any op that bumps those mtimes) then forces a spurious reconfigure. The
+# `build` recipe below bumps config.status past that broader list unless one of
+# these real inputs actually changed, so only OUR config changes reconfigure.
+CONFIGURE_INPUTS := $(MOZCONFIG) $(EM_CONFIG)
+
 .PHONY: all release firefox vendor configure build web run clean distclean
 
 all: web
@@ -58,10 +68,23 @@ vendor: firefox
 	python3 vendor-std-deps.py
 
 build: firefox vendor
+	@# Keep mach from reconfiguring on unrelated mtime changes: if none of our
+	@# CONFIGURE_INPUTS are newer than config.status, touch it so it stays newer
+	@# than everything in config_status_deps.in (mach then skips configure). If a
+	@# real config input IS newer, leave config.status alone so mach reconfigures.
+	@if [ -f "$(OBJDIR)/config.status" ]; then \
+	  changed=$$(find $(CONFIGURE_INPUTS) -newer "$(OBJDIR)/config.status" 2>/dev/null); \
+	  if [ -n "$$changed" ]; then \
+	    echo ">> config input changed, mach will reconfigure:"; echo "$$changed"; \
+	  else \
+	    touch "$(OBJDIR)/config.status"; \
+	  fi; \
+	fi
 	cd firefox && ./mach build
 
-# Force a reconfigure. Rarely needed: `mach build` (above) already auto-configures
-# a fresh objdir and re-runs configure whenever the mozconfig changes.
+# Force a reconfigure. Needed when you change something configure inspects that
+# isn't in CONFIGURE_INPUTS (e.g. after re-checking out firefox/): `build` above
+# only reconfigures when $(CONFIGURE_INPUTS) change, so use this otherwise.
 configure: firefox vendor
 	cd firefox && ./mach configure
 

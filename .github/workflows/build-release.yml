@@ -64,13 +64,23 @@ jobs:
         with:
           version: ${{ env.EMSDK_VERSION }}
 
+      # emsdk's bundled binaryen (v117) rejects rust/LLVM's newer wasm features, so
+      # pull a complete recent binaryen for wasm-opt. setup-binaryen fetches the
+      # WebAssembly/binaryen release (tag version_<N>) and puts <root>/bin on PATH.
       - name: Set up binaryen v${{ env.BINARYEN_VERSION }} (>= v117; for wasm-opt)
+        uses: Aandreba/setup-binaryen@v1.0.0
+        with:
+          version: ${{ env.BINARYEN_VERSION }}   # -> release tag version_129
+          token: ${{ secrets.GITHUB_TOKEN }}     # required input (release API)
+
+      - name: Point emscripten at the installed binaryen
         run: |
-          # emsdk's bundled binaryen (v117) rejects rust/LLVM's newer wasm features;
-          # use a complete recent binaryen. em_config reads $EM_BINARYEN_ROOT.
-          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" \
-            | tar xz
-          echo "EM_BINARYEN_ROOT=${GITHUB_WORKSPACE}/binaryen-version_${BINARYEN_VERSION}" >> "$GITHUB_ENV"
+          # em_config reads $EM_BINARYEN_ROOT and expects $EM_BINARYEN_ROOT/bin/wasm-opt.
+          # setup-binaryen only adds <root>/bin to PATH (no path output), so derive
+          # the root from wasm-opt's location wherever the tool-cache placed it.
+          ROOT="$(dirname "$(dirname "$(command -v wasm-opt)")")"
+          echo ">> binaryen root: $ROOT"; wasm-opt --version
+          echo "EM_BINARYEN_ROOT=$ROOT" >> "$GITHUB_ENV"
 
       - name: Set up Rust ${{ env.RUST_VERSION }} (+ rust-src, wasm target)
         uses: dtolnay/rust-toolchain@master
@@ -88,13 +98,15 @@ jobs:
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
-      - name: "Build (release: engine LTO + wasm-opt + zstd) — long"
+      - name: "Build (release: engine LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
+        env:
+          NO_WASM_OPT: '1'   # TEMP: skip the whole-module wasm-opt pass (OOMs/SIGSEGVs in CI); remove to re-enable
         run: |
           # wasm-opt's recursive passes overflow the default 8MB stack on the
           # ~250MB module and die with SIGSEGV. Raise the stack limit for the
           # whole make -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
           ulimit -s unlimited || ulimit -s 524288 || true
-          make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink (-O3) -> zstd
+          make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink -> zstd
 
       - name: Show link errors on failure
         if: failure()
