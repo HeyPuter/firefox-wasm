@@ -62,22 +62,34 @@ const INSTALL = `
     const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error('to')),ms))]);
     const stopped = await Promise.all(profSessions.map(sid => withTimeout(cdp.send('Profiler.stop',{},sid),8000).then(r=>r).catch(()=>null)));
 
-    const self = new Map(); let activeUs = 0;
-    const perTgt = [];
+    // JS-engine + scaffolding frames to exclude so the *driver* (what calls into JS
+    // each loop iteration) surfaces in the inclusive view.
+    const ENGINE = (f) => !f || f==='(program)'||f==='(root)'||f==='(idle)'||f==='(anonymous)'||f==='(garbage collector)'||f==='wasm-to-js'||f.startsWith('js-to-wasm')
+      || /PortableBaseline|ICInterpretOps|js::Interpret|InternalCallOrConstruct|RunScript|CallOrConstruct|MaybeEnterJit|BaselineFrame|MaybeForwardedScript|getEnvironmentFromCoordinate|NativeGet|NativeSet|::GetProperty|::SetProperty|AtomizeString|ContextChecks|TypedArray|ArrayBufferView|SetTypedArrayElement|GetElement|HashableValue|OrderedHashTable|SCOutput|SCInput|StructuredClone|js::Call|js::detail|PreBarriered|dlmalloc|memcpy|memset/.test(f)
+      || /nsThread::ProcessNextEvent|NS_ProcessNextEvent|MessageLoop::Run|nsThread::ThreadFunc|invokeEntryPoint|handleMessage|ThreadMain|MessagePumpForNon|MessagePumpDefault|MessagePumpLibevent|_emscripten_thread_mailbox|checkMailbox|em_task_queue|callUserCallback|__original_main|_main_thread|_emscripten_get_now|clock_gettime|emscripten_futex|__pthread_|pthread_cond|__timedwait|nanosleep|sched_yield/.test(f)
+      || IDLE.has(f);
+    let activeUs = 0; const perTgt = [];
     for (let ti=0; ti<stopped.length; ti++){ const prof=stopped[ti]; const p=prof&&prof.profile; if(!p||!p.nodes) continue;
-      const byId=new Map(p.nodes.map(n=>[n.id,n])); let tActive=0; const tSelf=new Map();
+      const byId=new Map(p.nodes.map(n=>[n.id,n])); const parent=new Map();
+      for(const n of p.nodes) for(const c of (n.children||[])) parent.set(c,n.id);
+      const fnOf=(id)=>{const n=byId.get(id);return n?(n.callFrame.functionName||'(anonymous)'):null;};
+      let tActive=0; const tIncl=new Map();
       const samples=p.samples||p.nodes.flatMap(n=>Array(n.hitCount||0).fill(n.id));
       const deltas=p.timeDeltas||samples.map(()=>1000);
-      for(let i=0;i<samples.length;i++){ const n=byId.get(samples[i]); if(!n) continue; const fn=n.callFrame.functionName||'(anonymous)'; const us=Math.max(0,deltas[i]||0);
-        if(!IDLE.has(fn)){ self.set(fn,(self.get(fn)||0)+us); activeUs+=us; tActive+=us; tSelf.set(fn,(tSelf.get(fn)||0)+us); } }
-      const top=[...tSelf.entries()].sort((a,b)=>b[1]-a[1]).slice(0,6).map(([f,u])=>f.slice(0,46)+':'+Math.round(u/1000));
-      if(tActive>500) perTgt.push({ url:(sidInfo.get(profSessions[ti])||{}).url.slice(0,40), activeMs:Math.round(tActive/1000), top });
+      for(let i=0;i<samples.length;i++){ const leaf=samples[i]; if(!byId.has(leaf)) continue; const us=Math.max(0,deltas[i]||0);
+        const lf=fnOf(leaf); if(IDLE.has(lf)) continue; activeUs+=us; tActive+=us;
+        // inclusive: every DRIVER frame on this stack (engine/scaffolding excluded)
+        const onStack=new Set(); let id=leaf;
+        while(id!=null){ const f=fnOf(id); if(f&&!ENGINE(f)) onStack.add(f.slice(0,70)); id=parent.get(id); }
+        for(const f of onStack) tIncl.set(f,(tIncl.get(f)||0)+us);
+      }
+      const drivers=[...tIncl.entries()].sort((a,b)=>b[1]-a[1]).slice(0,14).map(([f,u])=>f+' :'+Math.round(u/1000));
+      if(tActive>500) perTgt.push({ url:(sidInfo.get(profSessions[ti])||{}).url.slice(0,40), activeMs:Math.round(tActive/1000), drivers });
     }
     ws.close();
-    const sorted=[...self.entries()].sort((a,b)=>b[1]-a[1]).slice(0,30);
     console.log(JSON.stringify({ activeMs:Math.round(activeUs/1000), targets:profSessions.length,
-      top: sorted.map(([fn,us])=>({fn:fn.slice(0,72),ms:Math.round(us/1000),pct:+(us/activeUs*100).toFixed(1)})),
-      perTarget: perTgt.sort((a,b)=>b.activeMs-a.activeMs).slice(0,8) }, null, 2));
+      note:'drivers = inclusive frames with JS-engine/scaffolding excluded -> what calls into JS each loop iter',
+      perTarget: perTgt.sort((a,b)=>b.activeMs-a.activeMs).slice(0,6) }, null, 2));
   } catch (e) { console.log('exc', e.message); }
   finally { await browser.close(); server.close(); }
   process.exit(0);

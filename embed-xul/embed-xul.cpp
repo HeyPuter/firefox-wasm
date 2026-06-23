@@ -92,7 +92,6 @@ extern const mozilla::XREAppData* gAppData;
 #include "nsIURI.h"
 #include <unordered_map>
 #include <string>
-#include "nsGkAtoms.h"
 #include "nsNameSpaceManager.h"
 #include "nsGenericHTMLElement.h"
 #include "mozilla/dom/LoadURIOptionsBinding.h"

@@ -17,6 +17,17 @@ DST="$HERE/gre-stage"
 # firefox source so it lands in dist/bin; add runtime assets here by copying them in
 # below (see the fonts block). (A lost GPU-pref edit here caused an all-white ?gpu=1.)
 rm -rf "$DST"; mkdir -p "$DST"
+# Pin bumps leave stale dangling symlinks in dist/bin: the install link remains but
+# its source target was renamed/removed in the new tree (our `make -C` subtree builds
+# relink libxul without refreshing the install manifests). rsync -L below dereferences
+# symlinks and aborts (exit 23) on broken ones, so prune them first -- they point
+# nowhere and the new source lacks those files anyway. A full `mach build` recreates
+# the correct set.
+pruned=$(find "$SRC" -xtype l -print -delete 2>/dev/null || true)
+if [ -n "$pruned" ]; then
+  echo "stage-gre: pruned dangling symlink(s) from dist/bin (stale after pin bump):" >&2
+  echo "$pruned" | sed 's/^/  /' >&2
+fi
 # -L: dereference symlinks (dist/bin uses relative symlinks into the objdir that
 # would dangle here and break emscripten's file_packager).
 rsync -aL \

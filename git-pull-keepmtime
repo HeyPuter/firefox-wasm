@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# git-pull-keepmtime — pull (honoring your pull.rebase / rebase.autostash config)
+# but keep the mtimes of files whose CONTENT didn't change, so make/ninja don't
+# rebuild the world after every upstream bump + patch replay.
+#
+# Run it from inside the repo you want to pull, e.g.:
+#     cd firefox && ../git-pull-keepmtime
+# Extra args are forwarded to `git pull`.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+snap=$(mktemp); changed=$(mktemp); ref=$(mktemp)
+trap 'rm -f "$snap" "$changed" "$ref"' EXIT
+
+# 1. snapshot pre-pull mtimes of all tracked files  ("<epoch>\t<path>")
+echo "keepmtime: snapshotting mtimes..."
+git ls-files -z | xargs -0 stat -c '%Y	%n' > "$snap"
+
+old=$(git rev-parse HEAD)
+git pull "$@"                      # honors pull.rebase + rebase.autostash from config
+new=$(git rev-parse HEAD)
+
+if [ "$old" = "$new" ]; then
+  echo "keepmtime: HEAD unchanged; nothing to restore."
+  exit 0
+fi
+
+# 2. files that genuinely changed -> leave their fresh mtime so they rebuild:
+#    the upstream/replay delta (old..new) + any uncommitted working-tree edits.
+{
+  git -c core.quotepath=false diff --name-only "$old" "$new"
+  git -c core.quotepath=false diff --name-only HEAD
+} | sort -u > "$changed"
+
+# 3. reference mtime = oldest pre-pull mtime (guaranteed older than any build
+#    artifact, so make/ninja will skip every restored file).
+minepoch=$(cut -f1 "$snap" | sort -n | head -1)
+touch -d "@$minepoch" "$ref"
+
+# 4. restore: set every UNCHANGED tracked file's mtime back, in one batched pass.
+awk -F'\t' 'NR==FNR{c[$0]=1;next} !($2 in c){printf "%s\0",$2}' "$changed" "$snap" \
+  | xargs -0 -r touch -m -r "$ref" --
+
+echo "keepmtime: $(wc -l < "$changed" | tr -d ' ') files changed (will rebuild); the rest kept old mtimes."

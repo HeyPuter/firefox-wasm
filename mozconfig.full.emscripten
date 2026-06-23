@@ -61,6 +61,15 @@ export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
 export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
 export LDFLAGS="-pthread"
 
+# Cache compiles with sccache WHEN AVAILABLE (verified to cache emcc + host clang).
+# Gated on the binary existing -- a runner/CI without sccache (the GHA build does
+# not install it) must still configure -- and uses whatever path it's found at.
+# 40G holds a full debug-info libxul build without self-eviction.
+if command -v sccache >/dev/null 2>&1; then
+  ac_add_options --with-ccache=$(command -v sccache)
+  mk_add_options "export SCCACHE_CACHE_SIZE=40G"
+fi
+
 CC=emcc
 CXX=em++
 HOST_CC=clang
