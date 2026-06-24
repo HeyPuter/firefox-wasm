@@ -1,0 +1,4 @@
+packages:
+  - libxul.js
+  - embed-demo
+  - chrome-demo

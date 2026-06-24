@@ -43,7 +43,8 @@ LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 # these real inputs actually changed, so only OUR config changes reconfigure.
 CONFIGURE_INPUTS := $(MOZCONFIG) $(EM_CONFIG)
 
-.PHONY: all release firefox vendor configure build web run clean distclean
+.PHONY: all release firefox vendor configure build web run clean distclean \
+        libxul embed-demo chrome-demo
 
 all: web
 
@@ -98,6 +99,22 @@ web:
 
 run:
 	node embed-xul/server.cjs
+
+# --- libxul.js library + demos (pnpm monorepo) -----------------------------
+# Build the libxul.js package: the engine artifacts (build/build-lib.sh stages a
+# MINIMAL gre-stage -> gecko.{js,wasm,data,worker.js}) + the rspack ESM bundle.
+# Needs the engine built first (libxul.so), same as `web`.
+libxul:
+	@test -e "$(LIBXUL)" || $(MAKE) build
+	pnpm install
+	pnpm --filter libxul.js run build
+
+# Run the Vite demos (build the library first). `embed-demo` is the basic
+# embed-a-web-page demo; `chrome-demo` supplies the Firefox front-end files.
+embed-demo: libxul
+	pnpm --filter embed-demo dev
+chrome-demo: libxul
+	pnpm --filter chrome-demo dev
 
 clean:
 	rm -f  embed-xul/gecko.js embed-xul/gecko.wasm embed-xul/gecko.data \

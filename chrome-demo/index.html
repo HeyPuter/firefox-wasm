@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>libxul.js — chrome demo</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    header { padding: 8px 12px; background: #f3f3f3; border-bottom: 1px solid #ddd; }
+    #screen { display: block; border: 1px solid #ccc; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <header>libxul.js — full Firefox front-end (browser.xhtml); chrome files supplied by the app via the FS provider.</header>
+  <canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
