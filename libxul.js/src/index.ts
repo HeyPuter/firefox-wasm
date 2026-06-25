@@ -28,6 +28,12 @@ import assets from '../wasm/gecko-assets.json';
 export interface FsProvider {
   readdir(path: string): Promise<string[]>;
   readFile(path: string): Promise<Uint8Array>;
+  /**
+   * Optional fast path for lazy mounts. When present, libxul.js can build a
+   * filesystem tree from names + File metadata and read bytes only when Gecko
+   * opens a file. Providers without this keep the older eager readFile path.
+   */
+  getFile?(path: string): Promise<Blob>;
 }
 
 export interface GeckoOptions {
@@ -87,6 +93,16 @@ interface GeckoModule {
   removeRunDependency(id: string): void;
 }
 type GeckoFactory = (opts: Record<string, unknown>) => Promise<GeckoModule>;
+type ProviderFsEntry = {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  timestamp: number;
+  blob?: Blob;
+  children?: Map<string, ProviderFsEntry>;
+  node?: any;
+};
 
 // The engine glue is a classic emscripten MODULARIZE build (EXPORT_ES6 + pthread is
 // unreliable in this emsdk). Both it and the pthread worker are inlined as source
@@ -192,7 +208,7 @@ export class Gecko {
         }
         if (this.opts.fs) {
           m.addRunDependency('libxul-fs');
-          this.populateFs(m, this.opts.fs)
+          this.mountFsProvider(m, this.opts.fs)
             .then(() => m.removeRunDependency('libxul-fs'))
             .catch((e) => { printErr('[libxul] fs provider failed: ' + e); m.removeRunDependency('libxul-fs'); });
         }
@@ -279,7 +295,15 @@ export class Gecko {
     this.detach = [];
   }
 
-  // ---- GRE file provider -> MEMFS ----------------------------------------
+  // ---- GRE file provider --------------------------------------------------
+
+  private async mountFsProvider(m: GeckoModule, fs: FsProvider): Promise<void> {
+    if (fs.getFile) {
+      await this.mountLazyFsProvider(m, fs);
+    } else {
+      await this.populateFs(m, fs);
+    }
+  }
 
   private async populateFs(m: GeckoModule, fs: FsProvider, rel = ''): Promise<void> {
     const entries = await fs.readdir(rel);
@@ -296,6 +320,187 @@ export class Gecko {
         m.FS.writeFile(dest, await fs.readFile(child));
       }
     }
+  }
+
+  private async buildProviderTree(fs: FsProvider, rel = ''): Promise<ProviderFsEntry> {
+    const root: ProviderFsEntry = {
+      name: rel ? rel.replace(/\/$/, '').split('/').pop() || '' : '',
+      path: rel,
+      isDir: true,
+      size: 4096,
+      timestamp: Date.now(),
+      children: new Map(),
+    };
+    const entries = await fs.readdir(rel);
+    for (const name of entries) {
+      const isDir = name.endsWith('/');
+      const childPath = rel + name;
+      const cleanName = isDir ? name.slice(0, -1) : name;
+      if (isDir) {
+        const child = await this.buildProviderTree(fs, childPath);
+        child.name = cleanName;
+        root.children!.set(cleanName, child);
+      } else {
+        const blob = await fs.getFile!(childPath);
+        root.children!.set(cleanName, {
+          name: cleanName,
+          path: childPath,
+          isDir: false,
+          size: blob.size,
+          timestamp: Date.now(),
+          blob,
+        });
+      }
+    }
+    return root;
+  }
+
+  private async mountLazyFsProvider(m: GeckoModule, fs: FsProvider): Promise<void> {
+    const tree = await this.buildProviderTree(fs);
+    const FS = m.FS;
+    const DIR_MODE = 0o040555;
+    const FILE_MODE = 0o100444;
+    const now = Date.now();
+
+    const createNode = (parent: any, entry: ProviderFsEntry): any => {
+      if (entry.node) return entry.node;
+      const node = FS.createNode(parent, entry.name || '/', entry.isDir ? DIR_MODE : FILE_MODE, 0);
+      node.providerEntry = entry;
+      node.timestamp = entry.timestamp || now;
+      node.usedBytes = entry.isDir ? 4096 : entry.size;
+      node.node_ops = entry.isDir ? dirNodeOps : fileNodeOps;
+      node.stream_ops = entry.isDir ? dirStreamOps : fileStreamOps;
+      entry.node = node;
+      return node;
+    };
+
+    const getattr = (node: any) => {
+      const entry = node.providerEntry as ProviderFsEntry;
+      const size = entry.isDir ? 4096 : entry.size;
+      return {
+        dev: 1,
+        ino: node.id,
+        mode: node.mode,
+        nlink: 1,
+        uid: 0,
+        gid: 0,
+        rdev: node.rdev,
+        size,
+        atime: new Date(node.timestamp),
+        mtime: new Date(node.timestamp),
+        ctime: new Date(node.timestamp),
+        blksize: 4096,
+        blocks: Math.ceil(size / 4096),
+      };
+    };
+
+    const setReadOnlyAttr = (node: any, attr: any) => {
+      if (attr.timestamp !== undefined) node.timestamp = attr.timestamp;
+      if (attr.mode !== undefined) node.mode = attr.mode;
+    };
+
+    const dirNodeOps = {
+      getattr,
+      setattr: setReadOnlyAttr,
+      lookup(parent: any, name: string) {
+        const entry = (parent.providerEntry as ProviderFsEntry).children?.get(name);
+        if (!entry) throw FS.genericErrors[44];
+        return createNode(parent, entry);
+      },
+      readdir(node: any) {
+        const children = (node.providerEntry as ProviderFsEntry).children ?? new Map();
+        return ['.', '..', ...children.keys()];
+      },
+    };
+
+    const fileNodeOps = {
+      getattr,
+      setattr: setReadOnlyAttr,
+    };
+
+    const dirStreamOps = {
+      llseek(_stream: any, offset: number, whence: number) {
+        if (whence === 1) return offset + _stream.position;
+        if (whence === 2) return offset + 4096;
+        if (offset < 0) throw new FS.ErrnoError(28);
+        return offset;
+      },
+    };
+
+    const readBlobSync = (blob: Blob, position: number, length: number): Uint8Array => {
+      const readerCtor = (globalThis as unknown as { FileReaderSync?: typeof FileReaderSync }).FileReaderSync;
+      const slice = blob.slice(position, position + length);
+      if (readerCtor) {
+        return new Uint8Array(new readerCtor().readAsArrayBuffer(slice));
+      }
+      const xhr = new XMLHttpRequest();
+      const url = URL.createObjectURL(slice);
+      try {
+        xhr.open('GET', url, false);
+        xhr.overrideMimeType('text/plain; charset=x-user-defined');
+        xhr.send(null);
+        if (xhr.status && (xhr.status < 200 || xhr.status >= 300)) {
+          throw new Error(`libxul.js: lazy FsProvider read failed with HTTP ${xhr.status}`);
+        }
+        const text = xhr.responseText;
+        const bytes = new Uint8Array(text.length);
+        for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+        return bytes;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+
+    const fileStreamOps = {
+      llseek(stream: any, offset: number, whence: number) {
+        const entry = stream.node.providerEntry as ProviderFsEntry;
+        let position = offset;
+        if (whence === 1) position += stream.position;
+        if (whence === 2) position += entry.size;
+        if (position < 0) throw new FS.ErrnoError(28);
+        return position;
+      },
+      read(stream: any, buffer: Uint8Array, offset: number, length: number, position: number) {
+        const entry = stream.node.providerEntry as ProviderFsEntry;
+        if (!entry.blob || position >= entry.size) return 0;
+        const size = Math.min(entry.size - position, length);
+        if (size <= 0) return 0;
+        buffer.set(readBlobSync(entry.blob, position, size), offset);
+        return size;
+      },
+      mmap(stream: any, length: number, position: number) {
+        const ptr = (m as any)._malloc?.(length);
+        if (!ptr) throw new FS.ErrnoError(48);
+        const entry = stream.node.providerEntry as ProviderFsEntry;
+        const size = Math.min(Math.max(entry.size - position, 0), length);
+        if (size < length) m.HEAPU8.fill(0, ptr + size, ptr + length);
+        if (entry.blob && size > 0) m.HEAPU8.set(readBlobSync(entry.blob, position, size), ptr);
+        return { ptr, allocated: true };
+      },
+    };
+
+    const providerFs = {
+      mount() {
+        return createNode(null, tree);
+      },
+    };
+
+    try {
+      FS.unmount('/gre');
+    } catch {
+      // /gre is normally a plain MEMFS directory from gecko.data, not a mountpoint.
+    }
+    try {
+      FS.rmdir('/gre');
+    } catch {
+      // Keep the existing directory if it is not empty; mounting over it is valid.
+    }
+    try {
+      FS.mkdir('/gre');
+    } catch (e: any) {
+      if (e?.errno !== 20) throw e;
+    }
+    FS.mount(providerFs, {}, '/gre');
   }
 
   // ---- command protocol --------------------------------------------------

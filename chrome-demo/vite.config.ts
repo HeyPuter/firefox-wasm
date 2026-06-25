@@ -1,21 +1,43 @@
 import { defineConfig, type Plugin } from 'vite';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const require = createRequire(import.meta.url);
 const libDist = path.join(path.dirname(require.resolve('libxul.js/package.json')), 'dist');
-// libxul.js inlines gecko.js + gecko.worker.js; only the two binaries are served.
-const ENGINE = ['gecko.wasm', 'gecko.data'];
+// libxul.js inlines gecko.js + gecko.worker.js + gecko.data; chrome-demo serves
+// whichever wasm artifact the current libxul.js build produced.
+const ENGINE = ['gecko.wasm', 'gecko.wasm.zst'];
 const mime = (n: string) =>
   n.endsWith('.wasm') ? 'application/wasm' :
   n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
 
-// The chrome files NOT baked into libxul.js's minimal gecko.data live in the
-// engine objdir's dist/bin; chrome-demo supplies them to the engine at runtime
-// (see src/chrome-fs.ts). This plugin serves them under /gre-extra/, with a
-// directory listing when the request ends in "/" (dir names get a trailing "/").
+// The GRE files live in the engine objdir's dist/bin. gecko.data is intentionally
+// stripped to stay minimal, so chrome-demo ships the same non-binary GRE resource
+// set that the old unstripped preload used, plus the Firefox browser/ app dir,
+// in public/chrome-assets.tar.zst. The runtime expands it into OPFS on first load
+// (see src/chrome-fs.ts).
 const GRE_SRC = path.resolve(__dirname, '../obj-full-emscripten/dist/bin');
+const FONT_SRC = path.resolve(__dirname, '../firefox/toolkit/components/pdfjs/content/web/standard_fonts');
+const PUBLIC_DIR = path.resolve(__dirname, 'public');
+const ASSET_ARCHIVE = path.join(PUBLIC_DIR, 'chrome-assets.tar.zst');
+const ASSET_MANIFEST = path.join(PUBLIC_DIR, 'chrome-assets.json');
+const CLOBBER_FILE = path.join(PUBLIC_DIR, 'chrome-assets.clobber');
+const GRE_EXCLUDES = [
+  '*.so',
+  '*.wasm',
+  '*.a',
+  '*.data',
+  '*.dbg',
+  '*.symbols',
+  'firefox',
+  'firefox-bin',
+  'pingsender',
+  'nsinstall',
+  'nsinstall_real',
+];
 
 function serveEngine(): Plugin {
   return {
@@ -34,33 +56,84 @@ function serveEngine(): Plugin {
     },
     generateBundle() {
       for (const name of ENGINE) {
-        this.emitFile({ type: 'asset', fileName: name, source: fs.readFileSync(path.join(libDist, name)) });
+        const p = path.join(libDist, name);
+        if (fs.existsSync(p)) {
+          this.emitFile({ type: 'asset', fileName: name, source: fs.readFileSync(p) });
+        }
       }
     },
   };
 }
 
-function serveGreExtra(): Plugin {
+function newestMtimeMs(abs: string): number {
+  const st = fs.statSync(abs);
+  if (!st.isDirectory()) return st.mtimeMs;
+  let newest = st.mtimeMs;
+  for (const name of fs.readdirSync(abs)) {
+    newest = Math.max(newest, newestMtimeMs(path.join(abs, name)));
+  }
+  return newest;
+}
+
+function ensureChromeAssetsArchive(): void {
+  fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+  if (!fs.existsSync(CLOBBER_FILE)) fs.writeFileSync(CLOBBER_FILE, '1\n');
+  if (!fs.existsSync(GRE_SRC)) {
+    throw new Error(`chrome-demo: missing ${GRE_SRC}; build the full emscripten objdir before starting chrome-demo`);
+  }
+  if (!fs.existsSync(FONT_SRC)) {
+    throw new Error(`chrome-demo: missing ${FONT_SRC}; Firefox source checkout is required for bundled fonts`);
+  }
+
+  const newestSource = Math.max(newestMtimeMs(GRE_SRC), newestMtimeMs(FONT_SRC));
+  const archiveMtime = fs.existsSync(ASSET_ARCHIVE) ? fs.statSync(ASSET_ARCHIVE).mtimeMs : 0;
+  const manifestMtime = fs.existsSync(ASSET_MANIFEST) ? fs.statSync(ASSET_MANIFEST).mtimeMs : 0;
+  const clobberMtime = fs.statSync(CLOBBER_FILE).mtimeMs;
+  if (archiveMtime >= newestSource && archiveMtime >= clobberMtime &&
+      manifestMtime >= newestSource && manifestMtime >= clobberMtime) return;
+
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-assets-'));
+  const tarPath = path.join(stage, 'chrome-assets.tar');
+  const tmp = `${ASSET_ARCHIVE}.tmp`;
+  try {
+    fs.rmSync(tmp, { force: true });
+    const rsync = spawnSync('rsync', [
+      '-aL',
+      ...GRE_EXCLUDES.flatMap((pattern) => [`--exclude=${pattern}`]),
+      `${GRE_SRC}/`,
+      `${stage}/`,
+    ], { stdio: 'inherit' });
+    if (rsync.status !== 0) throw new Error('chrome-demo: failed to stage GRE resources with rsync');
+
+    for (const dest of ['fonts', 'browser/fonts']) {
+      fs.mkdirSync(path.join(stage, dest), { recursive: true });
+      for (const name of fs.readdirSync(FONT_SRC)) {
+        if (name.endsWith('.ttf')) fs.copyFileSync(path.join(FONT_SRC, name), path.join(stage, dest, name));
+      }
+    }
+
+    const roots = fs.readdirSync(stage);
+    if (!roots.length) throw new Error('chrome-demo: staged asset tree is empty');
+    const tar = spawnSync('tar', ['-cf', tarPath, '-C', stage, ...roots], { stdio: 'inherit' });
+    if (tar.status !== 0) throw new Error('chrome-demo: failed to create chrome asset tar');
+    const uncompressedSize = fs.statSync(tarPath).size;
+    const zstd = spawnSync('zstd', ['-q', '-f', '-19', tarPath, '-o', tmp], { stdio: 'inherit' });
+    if (zstd.status !== 0) throw new Error('chrome-demo: failed to compress public/chrome-assets.tar.zst; install zstd');
+    fs.writeFileSync(ASSET_MANIFEST, JSON.stringify({ uncompressedSize }) + '\n');
+    fs.renameSync(tmp, ASSET_ARCHIVE);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+function packageGreExtra(): Plugin {
   return {
-    name: 'libxul-gre-extra',
-    configureServer(server) {
-      server.middlewares.use('/gre-extra', (req, res, next) => {
-        const rel = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\//, '');
-        const abs = path.join(GRE_SRC, rel);
-        if (!abs.startsWith(GRE_SRC)) { res.statusCode = 403; res.end(); return; }
-        let st: fs.Stats;
-        try { st = fs.statSync(abs); } catch { res.statusCode = 404; res.end(); return; }
-        if (st.isDirectory()) {
-          const entries = fs.readdirSync(abs, { withFileTypes: true })
-            .map((d) => d.isDirectory() ? d.name + '/' : d.name);
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(entries));
-        } else {
-          res.setHeader('Content-Type', 'application/octet-stream');
-          fs.createReadStream(abs).pipe(res);
-        }
-      });
-    },
+    name: 'libxul-gre-extra-package',
+    buildStart: ensureChromeAssetsArchive,
+    configureServer: ensureChromeAssetsArchive,
   };
 }
 
@@ -70,10 +143,13 @@ const coop = {
 };
 
 export default defineConfig({
-  plugins: [serveEngine(), serveGreExtra()],
+  plugins: [serveEngine(), packageGreExtra()],
   // libxul.js is a workspace package under active rebuild; don't pre-bundle/cache
   // it, so a plain reload picks up a fresh dist/libxul.js (no `vite --force`).
   optimizeDeps: { exclude: ['libxul.js'] },
+  // main.ts uses top-level await (await gecko.init()); keep the build target
+  // modern so `vite build` doesn't reject it (dev already uses esnext).
+  build: { target: 'esnext' },
   server: { headers: coop },
   preview: { headers: coop },
 });

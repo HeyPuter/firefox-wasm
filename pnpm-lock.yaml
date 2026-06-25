@@ -13,6 +13,9 @@ importers:
       libxul.js:
         specifier: workspace:*
         version: link:../libxul.js
+      zstddec:
+        specifier: ^0.2.0
+        version: 0.2.0
     devDependencies:
       vite:
         specifier: ^5.4.0

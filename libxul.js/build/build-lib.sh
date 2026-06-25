@@ -82,6 +82,13 @@ echo ">> link rc=$rc"
 ls -la "$PKG"/wasm/gecko.js "$PKG"/wasm/gecko.wasm "$PKG"/wasm/gecko.data "$PKG"/wasm/gecko.worker.js 2>/dev/null | awk '{print $5,$9}'
 [ "$rc" = 0 ] || { echo "=== link.err tail ==="; tail -25 "$HERE/link.err"; exit "$rc"; }
 
+# emscripten regenerates gecko.js on every link; re-apply the WebRender shader
+# fix (hoist `out` varyings declared after main() so host WebGL -- e.g. Firefox,
+# which runs ANGLE's init-output-variables pass -- accepts the compositor
+# shaders). Idempotent; errors if the emscripten call site moved.
+echo ">> patching gecko.js (WebRender shader hoist for host WebGL)"
+node "$HERE/patch-gecko-shaderfix.mjs" "$OUT" || { echo "!! gecko.js shader patch failed"; exit 1; }
+
 # Compress shipped assets for the loader (src/index.ts reads gecko-assets.json and
 # decodes the .zst with zstddec via emscripten getPreloadedPackage/instantiateWasm).
 # gecko.data is ALWAYS compressed (small, mostly text). gecko.wasm only in RELEASE

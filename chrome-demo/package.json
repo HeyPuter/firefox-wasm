@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "libxul.js": "workspace:*"
+    "libxul.js": "workspace:*",
+    "zstddec": "^0.2.0"
   },
   "devDependencies": {
     "vite": "^5.4.0"
