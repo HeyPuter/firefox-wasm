@@ -20,10 +20,11 @@ const path = process.argv[2];
 if (!path) { console.error('usage: patch-gecko-shaderfix.mjs <gecko.js>'); process.exit(1); }
 
 let src = readFileSync(path, 'utf8');
-if (src.includes('__wrHoistVaryings')) { process.exit(0); } // already patched
 
-const CALL_FROM = 'var source = GL.getSource(shader, count, string, length);\n GLctx.shaderSource(GL.shaders[shader], source);';
-const CALL_TO = 'var source = GL.getSource(shader, count, string, length);\n try { source = __wrHoistVaryings(source); } catch(e){}\n GLctx.shaderSource(GL.shaders[shader], source);';
+// Match the _glShaderSource body whitespace-tolerantly (emscripten's codegen
+// indentation has changed across versions, e.g. 1 -> 2 spaces in 6.0.1).
+const CALL_RE = /var source = GL\.getSource\(shader, count, string, length\);\s*\n\s*GLctx\.shaderSource\(GL\.shaders\[shader\], source\);/;
+const CALL_TO = 'var source = GL.getSource(shader, count, string, length);\n  try { source = __wrHoistVaryings(source); } catch(e){}\n  GLctx.shaderSource(GL.shaders[shader], source);';
 
 const FN = `
 function __wrHoistVaryings(src) {
@@ -59,10 +60,33 @@ function __wrHoistVaryings(src) {
 }
 `;
 
-if (!src.includes(CALL_FROM)) {
-  console.error('patch-gecko-shaderfix: could not find the _glShaderSource call site; emscripten output may have changed -- update this patch.');
-  process.exit(1);
+// --- Patch 1: WebRender shader hoist (host WebGL) ---
+if (!src.includes('__wrHoistVaryings')) {
+  if (!CALL_RE.test(src)) {
+    console.error('patch-gecko-shaderfix: could not find the _glShaderSource call site; emscripten output may have changed -- update this patch.');
+    process.exit(1);
+  }
+  src = src.replace(CALL_RE, FN + '\n' + CALL_TO);
+  console.log('patch-gecko-shaderfix: injected __wrHoistVaryings into ' + path);
 }
-src = src.replace(CALL_FROM, FN + '\n' + CALL_TO);
+
+// --- Patch 2: proxied-JS completion (emscripten 6.0.x) ---
+// _emscripten_receive_on_main_thread_js runs a proxied JS function on the main
+// thread and, when a completion ctx is present, does `rtn.then(...)` -- assuming
+// the proxied function returned a Promise. Our `__proxy:'sync'` library functions
+// (wisp-syscalls.js socket/select/poll/lookup_name) and MAIN_THREAD_EM_ASM calls
+// return plain values, so `.then` throws ("rtn.then is not a function") and the
+// proxied syscall never completes -> WISP networking hangs. Wrap in Promise.resolve
+// so both sync values and real Promises complete correctly.
+const PROXY_FROM = 'rtn.then(rtn => __emscripten_run_js_on_main_thread_done(ctx, ctxArgs, rtn));';
+const PROXY_TO = 'Promise.resolve(rtn).then(rtn => __emscripten_run_js_on_main_thread_done(ctx, ctxArgs, rtn));';
+if (!src.includes(PROXY_TO)) {
+  if (!src.includes(PROXY_FROM)) {
+    console.error('patch-gecko-shaderfix: could not find the proxied-JS completion call site; emscripten output may have changed -- update this patch.');
+    process.exit(1);
+  }
+  src = src.replace(PROXY_FROM, PROXY_TO);
+  console.log('patch-gecko-shaderfix: wrapped proxied-JS completion in Promise.resolve in ' + path);
+}
+
 writeFileSync(path, src);
-console.log('patch-gecko-shaderfix: injected __wrHoistVaryings into ' + path);

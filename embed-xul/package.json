@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "playwright-core": "^1.61.0",
-    "wisp-server-node": "^1.1.8",
-    "zstddec": "^0.2.0"
-  }
-}

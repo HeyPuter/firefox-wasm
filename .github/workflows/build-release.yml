@@ -1,12 +1,13 @@
 name: build-and-release
 
-# Builds the full Gecko->wasm engine and the embed-xul web build, then attaches
-# the runtime artifacts (gecko.{js,wasm,data} + index.html + server.cjs) to a
-# GitHub Release.
+# Builds the full Gecko->wasm engine and the libxul.js package, then attaches the
+# packaged library (dist/libxul.js + dist/gecko.wasm + the wasm/ engine artifacts)
+# to a GitHub Release. (embed-xul/ + embed-chrome/ are legacy stubs and are NOT built
+# here -- the maintained package is libxul.js/.)
 #
 # !!! HEAVY BUILD — READ FIRST !!!
-# A full Gecko->wasm build is enormous: ~26 GB objdir, a ~3.7 GB libxul.so, a
-# ~245 MB gecko.wasm, and 25-50 min on 12 cores. On a standard hosted runner
+# A full Gecko->wasm build is enormous: ~26 GB objdir, a ~3.4 GB (relocatable) libxul.so,
+# a ~245 MB gecko.wasm, and 25-50 min on 12 cores. On a standard hosted runner
 # (4 vCPU / 16 GB RAM / ~14 GB free disk) this is marginal on ALL THREE axes:
 #   - disk: we free ~30 GB below; still tight. Prefer a larger/self-hosted runner.
 #   - ram:  the final emcc relink (wasm-opt over the 245 MB module) + engine LTO link
@@ -15,8 +16,8 @@ name: build-and-release
 # If it doesn't fit, switch `runs-on` to a larger runner (e.g. a self-hosted one
 # or GitHub larger runners) — the steps are otherwise unchanged.
 #
-# This workflow is a STARTING POINT and has not been run in CI; the toolchain
-# pins and the libclang step in particular may need iteration.
+# This workflow is a STARTING POINT; the local upgrade to emscripten 6.0.1 was
+# verified with a DEBUG build (the RELEASE/LTO path here is not yet CI-verified).
 
 on:
   push:
@@ -27,9 +28,9 @@ permissions:
   contents: write   # create releases / upload assets
 
 env:
-  EMSDK_VERSION: '3.1.56'        # emcc 3.1.56 / clang 19 (must match the port)
-  BINARYEN_VERSION: '129'        # newer than emsdk's bundled v117 (rust LLVM21 wasm features)
+  EMSDK_VERSION: '6.0.1'         # emcc 6.0.1 / clang 23 (bundles binaryen v130)
   RUST_VERSION: '1.95.0'
+  PNPM_VERSION: '9.12.0'         # matches root package.json "packageManager"
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.mozbuild
   MACH_NO_TERMINAL_FOOTER: '1'
 
@@ -49,7 +50,7 @@ jobs:
       #     dotnet: true
       #     haskell: true
       #     large-packages: true
-      #     swap-storage: true 
+      #     swap-storage: true
 
       - name: Install build prerequisites (clang/libclang for bindgen, etc.)
         run: |
@@ -59,28 +60,20 @@ jobs:
           # mozconfig.full.emscripten reads $LIBCLANG_PATH for --with-libclang-path.
           echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
 
-      - name: Set up emsdk ${{ env.EMSDK_VERSION }}
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: ${{ env.EMSDK_VERSION }}
-
-      # emsdk's bundled binaryen (v117) rejects rust/LLVM's newer wasm features, so
-      # pull a complete recent binaryen for wasm-opt. setup-binaryen fetches the
-      # WebAssembly/binaryen release (tag version_<N>) and puts <root>/bin on PATH.
-      - name: Set up binaryen v${{ env.BINARYEN_VERSION }} (>= v117; for wasm-opt)
-        uses: Aandreba/setup-binaryen@v1.0.0
-        with:
-          version: ${{ env.BINARYEN_VERSION }}   # -> release tag version_129
-          token: ${{ secrets.GITHUB_TOKEN }}     # required input (release API)
-
-      - name: Point emscripten at the installed binaryen
+      # Install emscripten from a FRESH emsdk clone (its bundled tags know 6.0.x; an
+      # older/cached emsdk may not). em_config reads $EMSDK and resolves binaryen at
+      # $EMSDK/upstream -- emsdk 6.0.1 bundles binaryen v130, which accepts the wasm
+      # features rust/LLVM emit, so NO separate binaryen install is needed anymore.
+      - name: Set up emscripten ${{ env.EMSDK_VERSION }}
         run: |
-          # em_config reads $EM_BINARYEN_ROOT and expects $EM_BINARYEN_ROOT/bin/wasm-opt.
-          # setup-binaryen only adds <root>/bin to PATH (no path output), so derive
-          # the root from wasm-opt's location wherever the tool-cache placed it.
-          ROOT="$(dirname "$(dirname "$(command -v wasm-opt)")")"
-          echo ">> binaryen root: $ROOT"; wasm-opt --version
-          echo "EM_BINARYEN_ROOT=$ROOT" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install "${EMSDK_VERSION}"
+          "$HOME/emsdk/emsdk" activate "${EMSDK_VERSION}"
+          echo "EMSDK=$HOME/emsdk" >> "$GITHUB_ENV"
+          echo "$HOME/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "$HOME/emsdk" >> "$GITHUB_PATH"
+          "$HOME/emsdk/upstream/emscripten/emcc" --version | head -1
+          "$HOME/emsdk/upstream/bin/wasm-opt" --version | head -1
 
       - name: Set up Rust ${{ env.RUST_VERSION }} (+ rust-src, wasm target)
         uses: dtolnay/rust-toolchain@master
@@ -89,8 +82,20 @@ jobs:
           components: rust-src
           targets: wasm32-unknown-emscripten
 
-      # em_config is committed and portable (reads $EMSDK + $EM_BINARYEN_ROOT), so
-      # no shim or config generation is needed here.
+      # libxul.js's package build (rspack bundle) runs under pnpm; the repo pins
+      # pnpm via package.json "packageManager", so let corepack provide it.
+      - name: Set up Node + pnpm ${{ env.PNPM_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Enable corepack/pnpm
+        run: |
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          pnpm --version
+
+      # em_config is committed and portable (reads $EMSDK; binaryen defaults to the
+      # emsdk's bundled $EMSDK/upstream), so no shim or config generation is needed.
 
       - name: Clone the pinned Gecko engine fork (depth 1)
         run: make firefox
@@ -98,49 +103,56 @@ jobs:
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
-      - name: "Build (release: engine LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
+      - name: "Build the engine + libxul.js (release: LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
         env:
           NO_WASM_OPT: '1'   # TEMP: skip the whole-module wasm-opt pass (OOMs/SIGSEGVs in CI); remove to re-enable
         run: |
           # wasm-opt's recursive passes overflow the default 8MB stack on the
-          # ~250MB module and die with SIGSEGV. Raise the stack limit for the
-          # whole make -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
+          # ~250MB module and die with SIGSEGV. Raise the stack limit for the whole
+          # make -> mach -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
+          # Also needed for the libxul.so relink: emscripten 6.0.1's wasm-ld SIGSEGVs
+          # on the `-shared` link, so `make build` relinks the engine libs as `-r`
+          # relocatable objects (libxul.js/build/relink-engine-r.sh, run between two
+          # `mach build` passes) -- handled inside `make`, no extra step here.
           ulimit -s unlimited || ulimit -s 524288 || true
-          make release   # firefox cloned; runs vendor -> mach build (LTO) -> relink -> zstd
+          make libxul RELEASE=1   # firefox cloned; vendor -> mach build (+relink) -> build-lib.sh -> rspack
 
       - name: Show link errors on failure
         if: failure()
         run: |
-          echo "=== embed-xul/link.err (tail) ==="
-          tail -n 60 embed-xul/link.err 2>/dev/null || echo "(no link.err)"
+          echo "=== libxul.js/build/link.err (tail) ==="
+          tail -n 60 libxul.js/build/link.err 2>/dev/null || echo "(no link.err)"
 
-      - name: Package the runtime artifacts (compressed)
+      - name: Package the libxul.js library (the runnable ESM bundle)
         run: |
-          mkdir -p dist/gecko-wasm
-          # Release ships the zstd-compressed wasm/data + the zstddec decompressor;
-          # index.html reads gecko-assets.json and decompresses in-browser.
-          cp embed-xul/index.html embed-xul/server.cjs embed-xul/zstddec.js \
-             embed-xul/gecko.js embed-xul/gecko.worker.js \
-             embed-xul/gecko.wasm.zst embed-xul/gecko.data.zst embed-xul/gecko-assets.json \
-             dist/gecko-wasm/
-          cat > dist/gecko-wasm/README.txt <<'TXT'
-          gecko-wasm runtime build (zstd-compressed; decompressed in-browser via zstddec).
-          Serve with COOP/COEP (required for SharedArrayBuffer): `npm i wisp-server-node && node server.cjs`,
-          then open the printed http://127.0.0.1:<port>/ in Chromium.
+          PKG=stage/libxul.js
+          mkdir -p "$PKG"
+          # The runnable/publishable artifact is dist/ (the ESM bundle + the single
+          # served gecko.wasm[.zst]) + package.json. The wasm/ dir is build intermediates
+          # -- gecko.js/worker.js/gecko.data are INLINED into dist/libxul.js, so only
+          # dist/gecko.wasm[.zst] is served separately; no need to ship wasm/.
+          cp -r libxul.js/dist libxul.js/package.json "$PKG/"
+          cp libxul.js/README.md "$PKG/" 2>/dev/null || true
+          cat > "$PKG/RELEASE.txt" <<'TXT'
+          libxul.js — embeddable Gecko (the Firefox engine) compiled to WebAssembly (emscripten 6.0.1).
+          The ESM bundle (dist/libxul.js) inlines the glue + gecko.data; consumers serve only the wasm
+          (dist/gecko.wasm or, in this release build, dist/gecko.wasm.zst — decompressed in-browser).
+          Must be served cross-origin-isolated (COOP: same-origin + COEP: require-corp) for SharedArrayBuffer.
+          See README / the embed-demo for usage: `new Gecko({ canvas, wispUrl }); await g.init(); g.load(url)`.
           TXT
-          tar -C dist -czf gecko-wasm-${{ github.ref_name }}.tar.gz gecko-wasm
-          ls -la gecko-wasm-*.tar.gz
+          tar -C stage -czf libxul.js-${{ github.ref_name }}.tar.gz libxul.js
+          ls -la libxul.js-*.tar.gz
 
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: gecko-wasm-${{ github.ref_name }}
-          path: gecko-wasm-*.tar.gz
+          name: libxul.js-${{ github.ref_name }}
+          path: libxul.js-*.tar.gz
           if-no-files-found: error
 
       - name: Publish GitHub Release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: gecko-wasm-*.tar.gz
+          files: libxul.js-*.tar.gz
           generate_release_notes: true

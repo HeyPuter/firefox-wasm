@@ -2,22 +2,26 @@
 #
 #   make firefox    shallow-clone (depth 1) the Gecko engine fork at the pinned commit
 #   make vendor     vendor the Rust std deps for -Z build-std (vendor-std-deps.py)
-#   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (reconfigures only if CONFIGURE_INPUTS changed)
+#   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (+ -r relink)
 #   make configure  force a reconfigure (needed after changing configure inputs outside CONFIGURE_INPUTS, e.g. re-checked-out firefox/)
-#   make web        stage GRE + relink the web build (builds the engine only if none yet)
-#   make all        firefox -> vendor -> (build if needed) -> web   (default)
-#   make run        serve the web build (server.cjs)
-#   make clean      remove the web build outputs
+#   make libxul     build the libxul.js package: engine artifacts + the rspack ESM bundle (default)
+#   make embed-demo / make chrome-demo   build the library, then run its Vite demo
+#   make run        alias for embed-demo (build + serve the basic embed demo)
+#   make web        alias for libxul (back-compat)
+#   make clean      remove the libxul.js build outputs
 #   make distclean  also remove the objdir and the firefox/ checkout
 #
-# Prereqs are not installed here (see README.md): emsdk, a system binaryen >= v129,
-# rust 1.95 + rust-src + the wasm32-unknown-emscripten target, python3.
-# The build env vars below default sensibly but honor the environment (?=), so CI
-# can override e.g. MOZBUILD_STATE_PATH / EM_BINARYEN_ROOT.
+# The runnable build is the libxul.js package + its Vite demos (embed-demo /
+# chrome-demo); the old embed-xul/ + embed-chrome/ stub dirs have been removed.
+# Prereqs are not installed here (see README.md): emsdk (emscripten 6.0.1; bundles
+# binaryen v130), rust 1.95 + rust-src + the wasm32-unknown-emscripten target,
+# python3, and node + pnpm (for the libxul.js bundle). The build env vars below
+# default sensibly but honor the environment (?=), so CI can override e.g.
+# MOZBUILD_STATE_PATH / EM_BINARYEN_ROOT / EMSDK.
 
 ROOT        := $(CURDIR)
 FIREFOX_URL := https://github.com/MercuryWorkshop/firefox.git
-FIREFOX_REF := ba474b338b2056a20c764dbe5ec10106810ddccf
+FIREFOX_REF := e67c6ef55fa342b78ec14824cbef56c4a42f641e
 
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
@@ -28,8 +32,9 @@ RELEASE             ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH
 export GECKO_RELEASE := $(RELEASE)
 
-# Engine build output (RELEASE uses its own objdir, matching the mozconfig + embed
-# scripts). `web` keys off libxul existing to decide whether a first build is needed.
+# Engine build output (RELEASE uses its own objdir, matching the mozconfig + the
+# libxul.js build script). `libxul` keys off this existing to decide whether a first
+# engine build is needed.
 OBJDIR := $(ROOT)/obj-full-emscripten$(if $(RELEASE),-release)
 LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 
@@ -46,7 +51,7 @@ CONFIGURE_INPUTS := $(MOZCONFIG) $(EM_CONFIG)
 .PHONY: all release firefox vendor configure build web run clean distclean \
         libxul embed-demo chrome-demo
 
-all: web
+all: libxul
 
 # Optimized build (engine LTO + wasm-opt). NOTE: toggling RELEASE changes the
 # mozconfig (--enable-lto), which forces a full reconfigure + rebuild of libxul.
@@ -81,6 +86,15 @@ build: firefox vendor
 	    touch "$(OBJDIR)/config.status"; \
 	  fi; \
 	fi
+	@# emscripten 6.0.x: the first `mach build` compiles everything but FAILS at the
+	@# libxul.so `-shared` link (wasm-ld SIGSEGVs in the ElemSection writer on the huge
+	@# module). relink-engine-r.sh relinks libxul/libnss3/libgkcodecs as `-r` relocatable
+	@# objects (also required so the embedder static-links them instead of treating them
+	@# as dynamic side modules); a second `mach build` then skips the up-to-date link and
+	@# finishes the resource/chrome tiers. (|| true masks only the expected link failure;
+	@# any real error resurfaces in the second build.)
+	cd firefox && ./mach build || true
+	bash libxul.js/build/relink-engine-r.sh
 	cd firefox && ./mach build
 
 # Force a reconfigure. Needed when you change something configure inspects that
@@ -89,21 +103,17 @@ build: firefox vendor
 configure: firefox vendor
 	cd firefox && ./mach configure
 
-# `web` REUSES an existing engine build: it runs `mach build` only when there's no
-# libxul yet (first time / fresh objdir). To rebuild the engine deliberately, run
-# `make build` (then `make web`).
-web:
-	@test -e "$(LIBXUL)" || $(MAKE) build
-	bash embed-xul/stage-gre.sh
-	bash embed-xul/restrip-relink-web.sh
+# Back-compat alias: the old embed-xul web build was removed; the web build IS the
+# libxul.js package now.
+web: libxul
 
-run:
-	node embed-xul/server.cjs
+# Build + serve the basic embed demo (Vite dev server with COOP/COEP + a WISP proxy).
+run: embed-demo
 
 # --- libxul.js library + demos (pnpm monorepo) -----------------------------
-# Build the libxul.js package: the engine artifacts (build/build-lib.sh stages a
-# MINIMAL gre-stage -> gecko.{js,wasm,data,worker.js}) + the rspack ESM bundle.
-# Needs the engine built first (libxul.so), same as `web`.
+# Build the libxul.js package (the default `all` target): the engine artifacts
+# (build/build-lib.sh stages a MINIMAL gre-stage -> gecko.{js,wasm,data,worker.js})
+# + the rspack ESM bundle. Builds the engine (libxul.so) first if there isn't one.
 libxul:
 	@test -e "$(LIBXUL)" || $(MAKE) build
 	pnpm install
@@ -117,10 +127,12 @@ chrome-demo: libxul
 	pnpm --filter chrome-demo dev
 
 clean:
-	rm -f  embed-xul/gecko.js embed-xul/gecko.wasm embed-xul/gecko.data \
-	       embed-xul/gecko.worker.js embed-xul/*.stripped.so embed-xul/*.o \
-	       embed-xul/gecko.wasm.zst embed-xul/gecko.data.zst embed-xul/gecko-assets.json
-	rm -rf embed-xul/gre-stage
+	rm -f  libxul.js/wasm/gecko.js libxul.js/wasm/gecko.wasm libxul.js/wasm/gecko.data \
+	       libxul.js/wasm/gecko.worker.js libxul.js/wasm/gecko.debug.wasm \
+	       libxul.js/wasm/gecko.wasm.zst libxul.js/wasm/gecko.data.zst \
+	       libxul.js/wasm/gecko-assets.json \
+	       libxul.js/build/*.stripped.so libxul.js/build/*.o libxul.js/build/link.err
+	rm -rf libxul.js/build/gre-stage libxul.js/dist
 
 distclean: clean
 	rm -rf obj-full-emscripten obj-full-emscripten-release firefox

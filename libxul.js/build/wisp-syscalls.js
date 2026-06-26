@@ -151,7 +151,9 @@ mergeInto(LibraryManager.library, {
           }
           if ((flags & {{{ cDefs.POLLIN }}}) && (rd & mask)) { dstRead |= mask; total++; }
           if ((flags & {{{ cDefs.POLLOUT }}}) && (wr & mask)) { dstWrite |= mask; total++; }
-          if ((flags & {{{ cDefs.POLLPRI }}}) && (ex & mask)) { dstExcept |= mask; total++; }
+          // emscripten 6.0.1 dropped POLLPRI from its precomputed cDefs (struct_info.json);
+          // use the stable musl value (0x2) directly.
+          if ((flags & 0x2 /* POLLPRI */) && (ex & mask)) { dstExcept |= mask; total++; }
         }
       }
       if (readfds) {{{ makeSetValue('readfds', 'w*4', 'dstRead', 'i32') }}};

@@ -2,7 +2,10 @@ import os, shutil
 EMSDK = os.environ.get('EMSDK', '/usr/lib/emsdk')
 EMSCRIPTEN_ROOT = EMSDK + '/upstream/emscripten'
 LLVM_ROOT = EMSDK + '/upstream/bin'
-# emsdk bundles binaryen v117, which rejects the wasm features rustc/LLVM emit.
-# Point at a complete system binaryen >= v129 instead (override with EM_BINARYEN_ROOT).
-BINARYEN_ROOT = os.environ.get('EM_BINARYEN_ROOT', '/usr')
+# Use the binaryen bundled with the active emsdk (emscripten 6.0.1 ships binaryen
+# v130, which accepts the wasm features rustc/LLVM emit -- the old emsdk 3.1.56
+# bundled v117 which did NOT, hence the historical system-binaryen override).
+# Keeping binaryen version-matched to emcc avoids unsupported-flag mismatches.
+# Override with EM_BINARYEN_ROOT (e.g. a system binaryen) if ever needed.
+BINARYEN_ROOT = os.environ.get('EM_BINARYEN_ROOT', EMSDK + '/upstream')
 NODE_JS = shutil.which('node') or (EMSDK + '/node')

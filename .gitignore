@@ -52,6 +52,6 @@ node_modules/
 # build error logs
 *.err
 
-# node deps (also as symlinks, e.g. embed-chrome/node_modules)
+# node deps (also as symlinks, e.g. a demo's node_modules)
 node_modules
 

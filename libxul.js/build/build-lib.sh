@@ -2,7 +2,7 @@
 # Build the libxul.js engine artifacts: stage the engine libs + minimal GRE, then
 # emcc-link embed-xul.cpp + libxul into wasm/gecko.{js,wasm,data,worker.js}.
 # Classic emscripten MODULARIZE (createGecko) so the ESM library loads it via
-# script injection. Flags mirror embed-xul/build-embed-full.sh (web target).
+# script injection.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"          # libxul.js/build
 PKG="$(cd "$HERE/.." && pwd)"                  # libxul.js
@@ -55,7 +55,7 @@ EMSETTINGS=(
   -pthread -sPTHREAD_POOL_SIZE=20 -sPTHREAD_POOL_SIZE_STRICT=0
   -sMODULARIZE=1 -sEXPORT_NAME=createGecko
   -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots
-  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency,HEAPU8,HEAP32
   -lidbfs.js -sALLOW_TABLE_GROWTH=1 -sWASM_BIGINT=1
   --pre-js "$HERE/wisp-bridge.js"
   --js-library "$HERE/wisp-syscalls.js"
