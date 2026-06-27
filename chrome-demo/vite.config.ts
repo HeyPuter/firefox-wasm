@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { server as wisp } from '@mercuryworkshop/wisp-js/server';
 
 const require = createRequire(import.meta.url);
 const libDist = path.join(path.dirname(require.resolve('libxul.js/package.json')), 'dist');
@@ -137,13 +138,37 @@ function packageGreExtra(): Plugin {
   };
 }
 
+// Run a WISP proxy (wisp-js) on the dev server itself, at ws(s)://<host>/wisp/.
+// The chrome front-end loads sites in tabs over it; main.ts defaults its wispUrl
+// to this endpoint. Only /wisp upgrades are claimed -- Vite's HMR socket passes
+// through. (Same plugin as embed-demo.)
+function wispProxy(): Plugin {
+  return {
+    name: 'wisp-proxy',
+    configureServer(server) {
+      server.httpServer?.on('upgrade', (req, socket, head) => {
+        if ((req.url || '').startsWith('/wisp')) {
+          wisp.routeRequest(req, socket as any, head);
+        }
+      });
+    },
+    configurePreviewServer(server) {
+      server.httpServer?.on('upgrade', (req, socket, head) => {
+        if ((req.url || '').startsWith('/wisp')) {
+          wisp.routeRequest(req, socket as any, head);
+        }
+      });
+    },
+  };
+}
+
 const coop = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
 export default defineConfig({
-  plugins: [serveEngine(), packageGreExtra()],
+  plugins: [serveEngine(), packageGreExtra(), wispProxy()],
   // libxul.js is a workspace package under active rebuild; don't pre-bundle/cache
   // it, so a plain reload picks up a fresh dist/libxul.js (no `vite --force`).
   optimizeDeps: { exclude: ['libxul.js'] },

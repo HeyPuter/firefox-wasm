@@ -13,6 +13,9 @@ INC="$OBJ/dist/include"
 DISTBIN="$OBJ/dist/bin"
 OUT="$PKG/wasm/gecko.js"
 export EM_CONFIG="$ROOT/em_config"
+# Use the active emsdk's em++ (EMSDK points at the pinned, WasmFS-patched install
+# set up by `make emsdk`). Falls back to PATH's em++ when EMSDK is unset.
+EMXX="${EMSDK:+$EMSDK/upstream/emscripten/}em++"
 mkdir -p "$PKG/wasm"
 
 if [ "${GECKO_RELEASE:-}" = "1" ]; then EMBED_OPT=(-O3); LINK_OPT=-O3; else EMBED_OPT=(-O0 -g0); LINK_OPT=-O0; fi
@@ -38,7 +41,7 @@ CXXFLAGS=(
   -pthread "${EMBED_OPT[@]}"
 )
 echo ">> compiling embed-xul.cpp"
-em++ "${CXXFLAGS[@]}" -c "$HERE/embed-xul.cpp" -o "$HERE/embed-xul.o" || exit 1
+"$EMXX" "${CXXFLAGS[@]}" -c "$HERE/embed-xul.cpp" -o "$HERE/embed-xul.o" || exit 1
 
 # mozglue/memory/mfbt/fmt are MOZ_GLUE_IN_PROGRAM: linked into the program, not libxul.
 LOOSE=()
@@ -54,18 +57,21 @@ EMSETTINGS=(
   -sSTACK_SIZE=8388608 -sEXIT_RUNTIME=0
   -pthread -sPTHREAD_POOL_SIZE=20 -sPTHREAD_POOL_SIZE_STRICT=0
   -sMODULARIZE=1 -sEXPORT_NAME=createGecko
-  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots
+  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency,HEAPU8,HEAP32
-  -lidbfs.js -sALLOW_TABLE_GROWTH=1 -sWASM_BIGINT=1
-  --pre-js "$HERE/wisp-bridge.js"
-  --js-library "$HERE/wisp-syscalls.js"
+  # WasmFS (the new FS impl). Its socket syscalls are reinstated by the WISP
+  # backend patched into libwasmfs (emsdk-patches/wisp_socket.h); wisp-net.js is
+  # the JS transport. Legacy SOCKFS/MEMFS/IDBFS are gone under WASMFS.
+  -sWASMFS=1 -sALLOW_TABLE_GROWTH=1 -sWASM_BIGINT=1
+  --js-library "$HERE/wisp-net.js"
+  --js-library "$HERE/provider-fs.js"
   --js-library "$HERE/wasm-host-bridge.js"
   -sPROXY_TO_PTHREAD=1
   -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=1 -sFULL_ES3
   -sOFFSCREEN_FRAMEBUFFER=1 -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1 -sGL_ENABLE_GET_PROC_ADDRESS=1
   -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=#gldummy
   -sENVIRONMENT=web,worker
-  --preload-file "$HERE/gre-stage@/gre"
+  --preload-file "$HERE/gre-stage@/gre-baked"
 )
 if [ "${DEBUG:-0}" = "1" ]; then
   EMSETTINGS+=( -g -gseparate-dwarf="$PKG/wasm/gecko.debug.wasm" )
@@ -75,7 +81,7 @@ fi
 
 ulimit -s unlimited 2>/dev/null || ulimit -s 524288 2>/dev/null || true
 echo ">> linking embed-xul + libxul + glue -> $OUT (slow)"
-em++ "$HERE/embed-xul.o" "$HERE/libxul.o" "${LOOSE[@]}" "${EXTRA[@]}" \
+"$EMXX" "$HERE/embed-xul.o" "$HERE/libxul.o" "${LOOSE[@]}" "${EXTRA[@]}" \
   "${EMSETTINGS[@]}" -o "$OUT" 2> "$HERE/link.err"
 rc=$?
 echo ">> link rc=$rc"

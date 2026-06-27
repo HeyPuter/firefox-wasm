@@ -6,7 +6,7 @@
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #17191c; color: #f7f7f5; }
     header { padding: 8px 12px; background: #f3f3f3; border-bottom: 1px solid #ddd; }
-    #screen { display: none; border: 1px solid #343941; image-rendering: pixelated; background: #fff; }
+    #screen { display: none; border: 1px solid #343941; image-rendering: pixelated; background: #fff; outline: none; }
     #screen.ready { display: block; }
     #splash {
       min-height: 100vh;
@@ -73,6 +73,44 @@
       color: #7d8794;
       user-select: none;
     }
+    .splash-controls {
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px 20px;
+    }
+    .splash-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #d9e0ea;
+      font-size: 13px;
+      user-select: none;
+      cursor: pointer;
+    }
+    .splash-controls .wisp-field {
+      flex: 1 1 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: default;
+    }
+    .splash-controls .wisp-field input {
+      flex: 1;
+      padding: 6px 8px;
+      background: #0f1115;
+      border: 1px solid #46505c;
+      color: #f7f7f5;
+      font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      border-radius: 3px;
+    }
+    .splash-controls .hint {
+      width: 100%;
+      margin: -4px 0 0;
+      color: #7d8794;
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
@@ -86,6 +124,12 @@
       <div class="progress-meta">
         <span id="progress-phase">Checking</span>
         <span id="progress-percent">0%</span>
+      </div>
+      <div class="splash-controls">
+        <label><input type="checkbox" id="opt-gpu" /> Use GPU acceleration</label>
+        <label><input type="checkbox" id="opt-jit" /> Enable JIT</label>
+        <label class="wisp-field">WISP server <input type="text" id="opt-wisp" spellcheck="false" autocomplete="off" /></label>
+        <p class="hint">Changing an option reloads the page to apply it.</p>
       </div>
       <div id="console-output" class="console-box" role="log" aria-label="Startup console output"></div>
     </div>

@@ -39,6 +39,9 @@ node_modules/
 # the Gecko engine fork — shallow-cloned at a pinned commit by `make firefox`
 /firefox/
 
+# the pinned, WasmFS-patched emscripten — pulled + patched by `make emsdk`
+/emsdk/
+
 # --- logs & render/test artifacts ---
 *.log
 *.png

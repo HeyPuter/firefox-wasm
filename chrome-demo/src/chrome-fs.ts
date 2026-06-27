@@ -1,4 +1,3 @@
-import type { FsProvider } from 'libxul.js';
 import { ZSTDDecoder } from 'zstddec';
 
 type OpfsDirectory = FileSystemDirectoryHandle;
@@ -22,14 +21,20 @@ type ProgressCallback = (progress: ChromeAssetsProgress) => void;
 // libxul.js bakes the minimal GRE into gecko.data but EXCLUDES the Firefox
 // front-end (browser/), which the chrome build needs as its APP dir
 // (/gre/browser, selected by GECKO_CHROME=1). chrome-demo ships the pre-strip
-// non-binary GRE resources plus browser/ as a tar.zst, expands it into OPFS once
-// per clobber version, and then exposes the OPFS tree as a libxul FsProvider.
-// libxul.js mounts this provider at /gre, so archive roots land at /gre/<root>.
-// readdir suffixes directory names with "/".
+// non-binary GRE resources plus browser/ as a tar.zst and expands it into an OPFS
+// directory once per clobber version. We then just hand libxul that OPFS path as
+// `fs` (GRE_OPFS_PATH): libxul builds its built-in OPFS provider over it and
+// consults it provider-first for /gre, falling back to the baked gecko.data on a
+// miss. The persistent profile lives at PROFILE_OPFS_PATH (also a built-in OPFS
+// provider). No custom FsProvider needed.
 const ARCHIVE_URL = '/chrome-assets.tar.zst';
 const MANIFEST_URL = '/chrome-assets.json';
 const CLOBBER_URL = '/chrome-assets.clobber';
-const OPFS_DIR = 'chrome-demo-gre-extra';
+// OPFS path passed to libxul as `fs`; the tar is extracted here (so /gre/<root>
+// resolves to OPFS gre/<root>). `profile` goes to a sibling OPFS dir.
+export const GRE_OPFS_PATH = 'gre';
+export const PROFILE_OPFS_PATH = 'profile';
+const OPFS_DIR = GRE_OPFS_PATH;
 const VERSION_FILE = '.chrome-assets-version';
 const REQUIRED_FILES = [
   'fonts/LiberationSans-Regular.ttf',
@@ -307,21 +312,3 @@ async function fileForPath(root: OpfsDirectory, path: string): Promise<OpfsFile>
   if (!name) throw new Error(`chrome-fs: invalid file path ${path}`);
   return (await directoryForPath(root, parts.join('/'))).getFileHandle(name);
 }
-
-export const chromeFs: FsProvider = {
-  async readdir(p: string): Promise<string[]> {
-    const dir = await directoryForPath(await getInstalledRoot(), p);
-    const entries: string[] = [];
-    for await (const [name, handle] of dir.entries()) {
-      if (name === VERSION_FILE) continue;
-      entries.push(handle.kind === 'directory' ? `${name}/` : name);
-    }
-    return entries;
-  },
-  async readFile(p: string): Promise<Uint8Array> {
-    return new Uint8Array(await (await (await fileForPath(await getInstalledRoot(), p)).getFile()).arrayBuffer());
-  },
-  async getFile(p: string): Promise<File> {
-    return await (await fileForPath(await getInstalledRoot(), p)).getFile();
-  },
-};

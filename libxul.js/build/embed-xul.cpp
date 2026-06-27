@@ -6,8 +6,14 @@
 #include <cstdlib>
 #include <cstdint>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <pthread.h>
 #include <emscripten.h>
+#include <emscripten/wasmfs.h>
+
+// Persistent /profile backend, patched into libwasmfs (emsdk-patches/
+// provider_backend.h). Not in the public emscripten/wasmfs.h, so declare it here.
+extern "C" backend_t wasmfs_create_provider_backend(int mountId);
 
 #include "nsXPCOM.h"
 #include "nsCOMPtr.h"
@@ -253,6 +259,38 @@ extern "C" void WasmRegisterWidgetComponents();
 extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   printf("xul_init: GRE dir = %s\n", greDir);
   fflush(stdout);
+  // Note: /dev/shm (needed by Gecko's shm_open-based IPC shared memory) is created
+  // by the WasmFS patch in patch-emsdk-wasmfs.mjs -- it can't be mkdir'd here
+  // because WasmFS's /dev is mode 0555 (mkdir returns EACCES).
+
+  // String `fs:`/`profile:` paths are served by WasmFS's NATIVE OPFS backend:
+  // ranged sync-access-handle I/O on a dedicated worker, with NO round-trip to the
+  // page main thread -- the fast path (the proxy-to-R ProviderBackend below is only
+  // for custom JS providers). Mount it ONCE at /opfs, which maps to the OPFS root;
+  // GRE_DIR / PROFILE_DIR then point at /opfs/<path> (index.ts). Safe to create
+  // here: xul_init runs on the app pthread (PROXY_TO_PTHREAD), not the browser main
+  // thread -- creating the backend on the main thread would deadlock waiting for the
+  // OPFS worker to spawn (see emscripten/wasmfs.h).
+  if (getenv("GECKO_OPFS_MOUNT")) {
+    backend_t ob = wasmfs_create_opfs_backend();
+    int orv = wasmfs_create_directory("/opfs", 0777, ob);
+    printf("xul_init: mounted /opfs (native OPFS backend) rv=%d\n", orv);
+    fflush(stdout);
+  }
+
+  // Mount the GRE provider backend at greDir BEFORE NS_InitXPCOM reads any GRE
+  // resource. When an `fs` provider OBJECT is registered (index.ts sets
+  // GECKO_GRE_PROVIDER + GRE_DIR=/gre), greDir is the empty /gre and we mount a
+  // pass-through ProviderBackend there: readdir/stat/read are served live from the
+  // provider (Module.geckoProviders[0]). (String paths use /opfs above instead;
+  // gecko.data stays baked at /gre-baked for the no-`fs` case.)
+  // (emsdk-patches/provider_backend.h + build/provider-fs.js.)
+  if (getenv("GECKO_GRE_PROVIDER")) {
+    backend_t gb = wasmfs_create_provider_backend(/*mountId=*/0);
+    int grv = wasmfs_create_directory(greDir, 0555, gb);
+    printf("xul_init: mounted %s (GRE provider backend) rv=%d\n", greDir, grv);
+    fflush(stdout);
+  }
 
   // Content build: binDir = the GRE (/gre), no provider. Chrome build: binDir = the
   // APP dir (/gre/browser) so resource:/// points at the Firefox front-end, with a
@@ -436,6 +474,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     mozilla::Preferences::SetInt("layout.css.stylo-threads", styloThreads);
     printf("xul_init: set layout.css.stylo-threads=%d\n", styloThreads);
 
+    // Disable the shared-memory UA stylesheet cache. It exists only to share the
+    // built-in UA sheets across CONTENT PROCESSES; this is a single-process build
+    // (no e10s/Fission), so it's pure overhead -- and Stylo's to_shmem builder
+    // (Servo_SharedMemoryBuilder_AddStylesheet) panics on the larger chrome UA
+    // sheet set (RustMozCrash in to_shmem::SharedMemoryBuilder::alloc), which
+    // blocks the chrome front-end from loading. Off => UA sheets load per-process.
+    mozilla::Preferences::SetBool("layout.css.shared-memory-ua-sheets.enabled", false);
+    printf("xul_init: disabled shared-memory UA sheets (single-process)\n");
+
     // ALWAYS-ACTIVE: a windowless browser is "inactive" by default. An inactive
     // top-level throttles its refresh driver to the background frame rate
     // (~1fps via layout.throttled_frame_rate), so content requestAnimationFrame,
@@ -572,6 +619,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     {
       const char* profPath = getenv("PROFILE_DIR");
       if (!profPath || !*profPath) profPath = "/profile";
+      // Mount the persistent /profile provider backend (WasmFS) BEFORE ProfD setup,
+      // so cookies/IndexedDB/places persist via the consumer's FsProvider. Gated on
+      // the ENV flag index.ts sets when a profile provider exists (the JS
+      // Module.geckoProviders the hooks read isn't visible on this pthread, but ENV
+      // is). Backend + hooks: emsdk-patches/provider_backend.h + build/provider-fs.js.
+      if (getenv("GECKO_PROFILE_PROVIDER")) {
+        backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
+        int mrv = wasmfs_create_directory(profPath, 0777, pb);
+        printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
+        fflush(stdout);
+      }
       nsCOMPtr<nsIFile> profDir;
       if (NS_SUCCEEDED(NS_NewNativeLocalFile(nsDependentCString(profPath),
                                              getter_AddRefs(profDir)))) {
@@ -1731,16 +1789,11 @@ struct XulCmd {
 static XulCmd* g_cmd = nullptr;
 extern "C" EMSCRIPTEN_KEEPALIVE void* xul_cmd_ptr() { return g_cmd; }
 
-// Shared futex word for the WISP socket-poll fast path (wisp-syscalls.js +
-// wisp-bridge.js). The worker-side poll()/select() sleep in Atomics.wait on this
-// word instead of busy-spinning; the main thread bumps it + Atomics.notify on any
-// WISP socket activity so the poll loop wakes immediately. A function-local static
-// lives at a fixed address in the shared wasm heap, so every thread sees the same
-// word. See gecko-wasm socket-poll optimization.
-extern "C" EMSCRIPTEN_KEEPALIVE int32_t* wisp_wakeword() {
-  static int32_t w = 0;
-  return &w;
-}
+// The WISP socket-poll futex word (wisp_wakeword) now lives in the WasmFS socket
+// backend (emsdk-patches/wisp_socket.h, compiled into libwasmfs), where the C++
+// poll() blocks on it. Necko's nsSocketTransportService2 still bumps it via its
+// weak `wisp_wakeword()` decl + emscripten_futex_wake on cross-thread dispatch,
+// resolving to that single strong definition. (Pre-WasmFS this was defined here.)
 
 // Run the event loop briefly so any handlers/microtasks fired by an input event
 // settle (and async layout updates land) before we repaint. Uses pending-event

@@ -20,21 +20,58 @@ import assets from '../wasm/gecko-assets.json';
 
 // ---- public API -----------------------------------------------------------
 
+/** File/directory metadata returned by a provider's `stat` (null = does not exist). */
+export interface FsStat {
+  size: number;
+  isDir: boolean;
+  /** Modification time in ms since epoch (optional). */
+  mtime?: number;
+}
+
 /**
- * Supplies GRE files that are NOT baked into the shipped gecko.data. The provider
- * root is mounted at GRE_DIR (/gre). `readdir` MUST suffix directory names with
- * "/" so the walk can recurse without a separate stat call.
+ * Async fallback storage for GRE files that are NOT baked into the shipped
+ * gecko.data, mounted under GRE_DIR (/gre). When Gecko opens a /gre path that isn't
+ * already present, the engine resolves it through this provider; paths passed here
+ * are RELATIVE to the mount root (e.g. "modules/Foo.sys.mjs"). Back it with
+ * IndexedDB, OPFS, fetch, … — all methods are genuinely async (the engine's
+ * synchronous read blocks a Gecko worker thread, never the page main thread).
  */
 export interface FsProvider {
+  stat(path: string): Promise<FsStat | null>;
   readdir(path: string): Promise<string[]>;
   readFile(path: string): Promise<Uint8Array>;
-  /**
-   * Optional fast path for lazy mounts. When present, libxul.js can build a
-   * filesystem tree from names + File metadata and read bytes only when Gecko
-   * opens a file. Providers without this keep the older eager readFile path.
-   */
-  getFile?(path: string): Promise<Blob>;
 }
+
+/**
+ * Read-write async storage for the persistent profile, a separate mount (/profile).
+ * The engine opens a profile file -> the whole file is fetched here on demand (async);
+ * writes accumulate in memory and are flushed back here per-file on fsync/close
+ * (`writeFile` with the full contents). Defaults to OPFS; override with your own
+ * backend, or pass a string path to use OPFS rooted there. Paths are mount-relative.
+ */
+export interface ProfileProvider extends FsProvider {
+  writeFile(path: string, data: Uint8Array): Promise<void>;
+  unlink(path: string): Promise<void>;
+  mkdir(path: string): Promise<void>;
+  /** Move from -> to (Gecko writes prefs/sessionstore as temp-then-rename). */
+  rename(from: string, to: string): Promise<void>;
+}
+
+// OPFS subdir for the default profile when `profile` is not supplied.
+const DEFAULT_PROFILE_PATH = 'gecko-profile';
+
+// Mount IDs handed to the WasmFS ProviderBackend; index into Module.geckoProviders.
+// The provider receives MOUNT-RELATIVE paths (the backend accumulates from its root),
+// so no path adaptation is needed (unlike the old absolute-path fs-provider.js).
+const PROFILE_MOUNT = 1;
+const GRE_MOUNT = 0;
+
+// A string `fs`/`profile` path is served by WasmFS's NATIVE OPFS backend (mounted
+// at /opfs in xul_init): ranged sync-access-handle I/O on a dedicated worker, no
+// round-trip to the page main thread -- the fast path. `/opfs/<path>` maps to the
+// OPFS directory at <path>. A custom FsProvider/ProfileProvider OBJECT instead uses
+// the proxy-to-R ProviderBackend (the only way to drive arbitrary consumer JS).
+const opfsAbs = (p: string) => '/opfs/' + p.replace(/^\/+|\/+$/g, '');
 
 export interface GeckoOptions {
   /**
@@ -51,8 +88,18 @@ export interface GeckoOptions {
   env?: Record<string, string>;
   /** WISP websocket endpoint; Necko fetches http(s):// over it. */
   wispUrl?: string;
-  /** Supplies GRE files beyond the baked-in minimal set (mounted under /gre). */
-  fs?: FsProvider;
+  /**
+   * Async fallback for GRE files beyond the baked-in minimal set (mounted at /gre).
+   * Either an FsProvider, or a string OPFS path (-> a built-in OPFS-backed provider
+   * rooted there). Omit for baked-only.
+   */
+  fs?: FsProvider | string;
+  /**
+   * Persistent profile storage (separate mount at /profile, read-write). Either a
+   * ProfileProvider, or a string OPFS path. Omitted -> a default OPFS provider at
+   * "gecko-profile". (Falls back to ephemeral in-memory if OPFS is unavailable.)
+   */
+  profile?: ProfileProvider | string;
   /** Where gecko.wasm + gecko.data are served (URL prefix; default './', relative to the page). */
   assetBase?: string;
   /** Full override of engine-asset location (file -> url); takes precedence over assetBase. */
@@ -93,16 +140,6 @@ interface GeckoModule {
   removeRunDependency(id: string): void;
 }
 type GeckoFactory = (opts: Record<string, unknown>) => Promise<GeckoModule>;
-type ProviderFsEntry = {
-  name: string;
-  path: string;
-  isDir: boolean;
-  size: number;
-  timestamp: number;
-  blob?: Blob;
-  children?: Map<string, ProviderFsEntry>;
-  node?: any;
-};
 
 // The engine glue is a classic emscripten MODULARIZE build (EXPORT_ES6 + pthread is
 // unreliable in this emsdk). Both it and the pthread worker are inlined as source
@@ -152,6 +189,14 @@ export class Gecko {
   private dec = new TextDecoder();
   private blitImg: ImageData | null = null;
   private blitDst32: Uint32Array | null = null;
+  // GPU mode: the engine keeps popups (menus, context menus, panels, <select>
+  // dropdowns) off the WebGL compositor and paints them into a separate BGRA
+  // buffer; we draw that onto a 2D canvas stacked above #glout. (Software mode
+  // composites popups into the main buffer, so this is GPU-only.)
+  private popupCtx: CanvasRenderingContext2D | null = null;
+  private popupImg: ImageData | null = null;
+  private popupDst32: Uint32Array | null = null;
+  private popupShown = false;
   private detach: Array<() => void> = [];
 
   constructor(opts: GeckoOptions) {
@@ -191,6 +236,28 @@ export class Gecko {
     let resolveReady!: () => void;
     const ready = new Promise<void>((r) => (resolveReady = r));
 
+    // Resolve the FS providers (awaiting OPFS root handles) before startup, so preRun
+    // can register them synchronously. Each provider sees MOUNT-RELATIVE paths (the
+    // WasmFS ProviderBackend accumulates from its mount root). /profile = read-write
+    // persistent (default: OPFS at DEFAULT_PROFILE_PATH); /gre = an optional provider
+    // consulted FIRST, with the baked gecko.data as fallback. Either option may be a
+    // provider object or a string OPFS path.
+    // Split each mount into a native-OPFS sub-path (string) vs a custom provider
+    // object. String -> native OPFS backend at /opfs/<path> (fast). Object -> the
+    // proxy-to-R ProviderBackend. The default profile is a string path, so it too
+    // gets the native backend.
+    let profOpfsPath: string | undefined;
+    let profProv: ProfileProvider | undefined;
+    if (typeof this.opts.profile === 'string') profOpfsPath = this.opts.profile;
+    else if (this.opts.profile) profProv = this.opts.profile;
+    else profOpfsPath = DEFAULT_PROFILE_PATH;
+
+    let greOpfsPath: string | undefined;
+    let greProv: FsProvider | undefined;
+    if (typeof this.opts.fs === 'string') greOpfsPath = this.opts.fs;
+    else if (this.opts.fs) greProv = this.opts.fs;
+    // else: no `fs` -> the baked gecko.data only.
+
     const moduleOpts: Record<string, unknown> = {
       print: (t: string) => {
         if (typeof t === 'string' && t.includes('READY cmd=')) resolveReady();
@@ -199,19 +266,34 @@ export class Gecko {
       printErr,
       onAbort: (w: unknown) => printErr('[libxul] abort: ' + w),
       preRun: [(m: GeckoModule) => {
-        m.ENV['GRE_DIR'] = '/gre';
+        // Mount selection (done in xul_init, gated on these ENV vars since the JS
+        // geckoProviders object isn't visible on the engine pthreads):
+        //  - string path  -> native OPFS backend at /opfs (GECKO_OPFS_MOUNT); the
+        //    GRE/profile dirs are /opfs/<path>.
+        //  - FsProvider    -> proxy-to-R ProviderBackend at /gre or /profile.
+        //  - no `fs`       -> the baked gecko.data preloaded at /gre-baked.
+        if (greOpfsPath || profOpfsPath) m.ENV['GECKO_OPFS_MOUNT'] = '1';
+        m.ENV['GRE_DIR'] = greOpfsPath ? opfsAbs(greOpfsPath) : greProv ? '/gre' : '/gre-baked';
+        if (profOpfsPath) m.ENV['PROFILE_DIR'] = opfsAbs(profOpfsPath);
         m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
         for (const [k, v] of Object.entries(this.opts.env ?? {})) m.ENV[k] = v;
-        const wisp = this.opts.wispUrl;
-        if (wisp && typeof (globalThis as any).WISP !== 'undefined') {
-          (globalThis as any).WISP.install(m, wisp);
-        }
-        if (this.opts.fs) {
-          m.addRunDependency('libxul-fs');
-          this.mountFsProvider(m, this.opts.fs)
-            .then(() => m.removeRunDependency('libxul-fs'))
-            .catch((e) => { printErr('[libxul] fs provider failed: ' + e); m.removeRunDependency('libxul-fs'); });
-        }
+        // The WISP transport (build/wisp-net.js, a --js-library) reads the
+        // endpoint from Module.wispUrl and lazily opens the single WebSocket on
+        // the runtime main thread when the first socket connects.
+        if (this.opts.wispUrl) (m as unknown as { wispUrl: string }).wispUrl = this.opts.wispUrl;
+
+        // Custom provider OBJECTS only: register them for the WasmFS ProviderBackend
+        // (emsdk-patches/provider_backend.h + provider-fs.js). Its hooks run on the
+        // runtime main thread R via proxySyncWithCtx and read Module.geckoProviders
+        // here on R. The actual mount is done in C++ (xul_init) once the runtime is
+        // up -- calling the _wasmfs_create_* export from preRun would be "before
+        // runtime initialization" -- gated on the ENV flags below (ENV propagates to
+        // the engine pthreads; this JS object does not). String paths use the native
+        // OPFS backend instead and skip all of this.
+        const mm = m as unknown as { geckoProviders: Record<number, unknown> };
+        mm.geckoProviders = {};
+        if (profProv) { mm.geckoProviders[PROFILE_MOUNT] = profProv; m.ENV['GECKO_PROFILE_PROVIDER'] = '1'; }
+        if (greProv) { mm.geckoProviders[GRE_MOUNT] = greProv; m.ENV['GECKO_GRE_PROVIDER'] = '1'; }
       }],
     };
     // The pthread worker loads the (bundled) runtime from this Blob; the wasm reaches
@@ -295,214 +377,6 @@ export class Gecko {
     this.detach = [];
   }
 
-  // ---- GRE file provider --------------------------------------------------
-
-  private async mountFsProvider(m: GeckoModule, fs: FsProvider): Promise<void> {
-    if (fs.getFile) {
-      await this.mountLazyFsProvider(m, fs);
-    } else {
-      await this.populateFs(m, fs);
-    }
-  }
-
-  private async populateFs(m: GeckoModule, fs: FsProvider, rel = ''): Promise<void> {
-    const entries = await fs.readdir(rel);
-    for (const name of entries) {
-      const isDir = name.endsWith('/');
-      const child = rel + name;
-      const dest = '/gre/' + (isDir ? child.slice(0, -1) : child);
-      if (isDir) {
-        m.FS.mkdirTree(dest);
-        await this.populateFs(m, fs, child);
-      } else {
-        const slash = dest.lastIndexOf('/');
-        if (slash > 0) m.FS.mkdirTree(dest.slice(0, slash));
-        m.FS.writeFile(dest, await fs.readFile(child));
-      }
-    }
-  }
-
-  private async buildProviderTree(fs: FsProvider, rel = ''): Promise<ProviderFsEntry> {
-    const root: ProviderFsEntry = {
-      name: rel ? rel.replace(/\/$/, '').split('/').pop() || '' : '',
-      path: rel,
-      isDir: true,
-      size: 4096,
-      timestamp: Date.now(),
-      children: new Map(),
-    };
-    const entries = await fs.readdir(rel);
-    for (const name of entries) {
-      const isDir = name.endsWith('/');
-      const childPath = rel + name;
-      const cleanName = isDir ? name.slice(0, -1) : name;
-      if (isDir) {
-        const child = await this.buildProviderTree(fs, childPath);
-        child.name = cleanName;
-        root.children!.set(cleanName, child);
-      } else {
-        const blob = await fs.getFile!(childPath);
-        root.children!.set(cleanName, {
-          name: cleanName,
-          path: childPath,
-          isDir: false,
-          size: blob.size,
-          timestamp: Date.now(),
-          blob,
-        });
-      }
-    }
-    return root;
-  }
-
-  private async mountLazyFsProvider(m: GeckoModule, fs: FsProvider): Promise<void> {
-    const tree = await this.buildProviderTree(fs);
-    const FS = m.FS;
-    const DIR_MODE = 0o040555;
-    const FILE_MODE = 0o100444;
-    const now = Date.now();
-
-    const createNode = (parent: any, entry: ProviderFsEntry): any => {
-      if (entry.node) return entry.node;
-      const node = FS.createNode(parent, entry.name || '/', entry.isDir ? DIR_MODE : FILE_MODE, 0);
-      node.providerEntry = entry;
-      node.timestamp = entry.timestamp || now;
-      node.usedBytes = entry.isDir ? 4096 : entry.size;
-      node.node_ops = entry.isDir ? dirNodeOps : fileNodeOps;
-      node.stream_ops = entry.isDir ? dirStreamOps : fileStreamOps;
-      entry.node = node;
-      return node;
-    };
-
-    const getattr = (node: any) => {
-      const entry = node.providerEntry as ProviderFsEntry;
-      const size = entry.isDir ? 4096 : entry.size;
-      return {
-        dev: 1,
-        ino: node.id,
-        mode: node.mode,
-        nlink: 1,
-        uid: 0,
-        gid: 0,
-        rdev: node.rdev,
-        size,
-        atime: new Date(node.timestamp),
-        mtime: new Date(node.timestamp),
-        ctime: new Date(node.timestamp),
-        blksize: 4096,
-        blocks: Math.ceil(size / 4096),
-      };
-    };
-
-    const setReadOnlyAttr = (node: any, attr: any) => {
-      if (attr.timestamp !== undefined) node.timestamp = attr.timestamp;
-      if (attr.mode !== undefined) node.mode = attr.mode;
-    };
-
-    const dirNodeOps = {
-      getattr,
-      setattr: setReadOnlyAttr,
-      lookup(parent: any, name: string) {
-        const entry = (parent.providerEntry as ProviderFsEntry).children?.get(name);
-        if (!entry) throw FS.genericErrors[44];
-        return createNode(parent, entry);
-      },
-      readdir(node: any) {
-        const children = (node.providerEntry as ProviderFsEntry).children ?? new Map();
-        return ['.', '..', ...children.keys()];
-      },
-    };
-
-    const fileNodeOps = {
-      getattr,
-      setattr: setReadOnlyAttr,
-    };
-
-    const dirStreamOps = {
-      llseek(_stream: any, offset: number, whence: number) {
-        if (whence === 1) return offset + _stream.position;
-        if (whence === 2) return offset + 4096;
-        if (offset < 0) throw new FS.ErrnoError(28);
-        return offset;
-      },
-    };
-
-    const readBlobSync = (blob: Blob, position: number, length: number): Uint8Array => {
-      const readerCtor = (globalThis as unknown as { FileReaderSync?: typeof FileReaderSync }).FileReaderSync;
-      const slice = blob.slice(position, position + length);
-      if (readerCtor) {
-        return new Uint8Array(new readerCtor().readAsArrayBuffer(slice));
-      }
-      const xhr = new XMLHttpRequest();
-      const url = URL.createObjectURL(slice);
-      try {
-        xhr.open('GET', url, false);
-        xhr.overrideMimeType('text/plain; charset=x-user-defined');
-        xhr.send(null);
-        if (xhr.status && (xhr.status < 200 || xhr.status >= 300)) {
-          throw new Error(`libxul.js: lazy FsProvider read failed with HTTP ${xhr.status}`);
-        }
-        const text = xhr.responseText;
-        const bytes = new Uint8Array(text.length);
-        for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
-        return bytes;
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    };
-
-    const fileStreamOps = {
-      llseek(stream: any, offset: number, whence: number) {
-        const entry = stream.node.providerEntry as ProviderFsEntry;
-        let position = offset;
-        if (whence === 1) position += stream.position;
-        if (whence === 2) position += entry.size;
-        if (position < 0) throw new FS.ErrnoError(28);
-        return position;
-      },
-      read(stream: any, buffer: Uint8Array, offset: number, length: number, position: number) {
-        const entry = stream.node.providerEntry as ProviderFsEntry;
-        if (!entry.blob || position >= entry.size) return 0;
-        const size = Math.min(entry.size - position, length);
-        if (size <= 0) return 0;
-        buffer.set(readBlobSync(entry.blob, position, size), offset);
-        return size;
-      },
-      mmap(stream: any, length: number, position: number) {
-        const ptr = (m as any)._malloc?.(length);
-        if (!ptr) throw new FS.ErrnoError(48);
-        const entry = stream.node.providerEntry as ProviderFsEntry;
-        const size = Math.min(Math.max(entry.size - position, 0), length);
-        if (size < length) m.HEAPU8.fill(0, ptr + size, ptr + length);
-        if (entry.blob && size > 0) m.HEAPU8.set(readBlobSync(entry.blob, position, size), ptr);
-        return { ptr, allocated: true };
-      },
-    };
-
-    const providerFs = {
-      mount() {
-        return createNode(null, tree);
-      },
-    };
-
-    try {
-      FS.unmount('/gre');
-    } catch {
-      // /gre is normally a plain MEMFS directory from gecko.data, not a mountpoint.
-    }
-    try {
-      FS.rmdir('/gre');
-    } catch {
-      // Keep the existing directory if it is not empty; mounting over it is valid.
-    }
-    try {
-      FS.mkdir('/gre');
-    } catch (e: any) {
-      if (e?.errno !== 20) throw e;
-    }
-    FS.mount(providerFs, {}, '/gre');
-  }
-
   // ---- command protocol --------------------------------------------------
 
   private run(item: Cmd): Promise<number | string | null> {
@@ -581,10 +455,13 @@ export class Gecko {
 
   // BGRA (engine) -> RGBA (canvas), a 32-bit word at a time, reusing one ImageData.
   private blit(): number {
-    if (!this.ctx) return 0;  // GPU mode: WebRender presents to #screen via WebGL (#glout overlay)
     const m = this.mod!;
     const i32 = m.HEAP32, u8 = m.HEAPU8;
     const resPtr = i32[(this.cmd + RES) >> 2], len = i32[(this.cmd + LEN) >> 2];
+    // GPU mode: WebRender already presented the main scene to #glout; the result
+    // buffer (if any) is the popup overlay. Draw it on the 2D overlay above #glout.
+    if (this.gpu) { this.drawPopupOverlay(resPtr, len); return 0; }
+    if (!this.ctx) return 0;
     if (!resPtr || !len) return 0;
     if (!this.blitImg) {
       this.blitImg = this.ctx.createImageData(this.W, this.H);
@@ -601,6 +478,33 @@ export class Gecko {
     }
     this.ctx.putImageData(this.blitImg, 0, 0);
     return nonWhite;
+  }
+
+  // GPU mode: draw the engine's popup overlay buffer (BGRA: transparent backdrop +
+  // opaque popup pixels) onto the 2D #popup-overlay canvas above #glout. A null/empty
+  // result means no popup is open -> clear the overlay (dismisses the last popup).
+  // putImageData replaces the whole canvas, so a shrunken/moved popup leaves no trail.
+  private drawPopupOverlay(resPtr: number, len: number): void {
+    const octx = this.popupCtx;
+    if (!octx) return;
+    if (!resPtr || !len) {
+      if (this.popupShown) { octx.clearRect(0, 0, this.W, this.H); this.popupShown = false; }
+      return;
+    }
+    if (!this.popupImg || this.popupImg.width !== this.W || this.popupImg.height !== this.H) {
+      this.popupImg = octx.createImageData(this.W, this.H);
+      this.popupDst32 = new Uint32Array(this.popupImg.data.buffer);
+    }
+    const n = len >>> 2;
+    const src32 = new Uint32Array(this.mod!.HEAPU8.buffer, resPtr, n);
+    const dst = this.popupDst32!;
+    // BGRA -> RGBA, PRESERVING source alpha (unlike blit(), which forces opaque).
+    for (let i = 0; i < n; i++) {
+      const p = src32[i];
+      dst[i] = ((p >>> 16) & 0xFF) | (p & 0x0000FF00) | ((p & 0xFF) << 16) | (p & 0xFF000000);
+    }
+    octx.putImageData(this.popupImg, 0, 0);
+    this.popupShown = true;
   }
 
   private startPaintLoop(): void {
@@ -653,6 +557,21 @@ export class Gecko {
       glout.style.pointerEvents = 'none';  // let mouse/keyboard reach #screen beneath
       wrap.appendChild(glout);
     }
+    // Popup overlay: a 2D canvas stacked ABOVE #glout (popups must draw over the main
+    // scene). Appended last + zIndex 2 so it wins; pointer-events none so input still
+    // reaches #screen. drawPopupOverlay() paints the engine's popup buffer here.
+    let ov = document.getElementById('popup-overlay') as HTMLCanvasElement | null;
+    if (!ov) {
+      ov = document.createElement('canvas');
+      ov.id = 'popup-overlay';
+      ov.style.position = 'absolute';
+      ov.style.left = '0';
+      ov.style.top = '0';
+      ov.style.zIndex = '2';
+      ov.style.pointerEvents = 'none';
+      wrap.appendChild(ov);
+    }
+    this.popupCtx = ov.getContext('2d');
     this.syncGpuSize();
   }
 
@@ -667,13 +586,18 @@ export class Gecko {
     }
     c.style.width = this.W + 'px';
     c.style.height = this.H + 'px';
-    const glout = document.getElementById('glout') as HTMLCanvasElement | null;
-    if (glout) {
-      glout.width = this.W;
-      glout.height = this.H;
-      glout.style.width = this.W + 'px';
-      glout.style.height = this.H + 'px';
+    for (const id of ['glout', 'popup-overlay']) {
+      const el = document.getElementById(id) as HTMLCanvasElement | null;
+      if (el) {
+        el.width = this.W;
+        el.height = this.H;
+        el.style.width = this.W + 'px';
+        el.style.height = this.H + 'px';
+      }
     }
+    // Resizing the overlay canvas clears it; force a fresh popup paint next frame.
+    this.popupImg = null;
+    this.popupShown = false;
   }
 
   private mods(e: MouseEvent | KeyboardEvent | WheelEvent): number {
@@ -698,7 +622,10 @@ export class Gecko {
     on('mousemove', (e) => { const p = this.xy(e); this.run({ op: OP_MOUSE, evType: 0, x: p.x, y: p.y, buttons: e.buttons, modifiers: this.mods(e) }); });
     on('mousedown', (e) => { c.focus(); const p = this.xy(e); this.run({ op: OP_MOUSE, evType: 1, x: p.x, y: p.y, button: e.button, buttons: e.buttons, clickCount: e.detail, modifiers: this.mods(e) }); });
     on('mouseup', (e) => { const p = this.xy(e); this.run({ op: OP_MOUSE, evType: 2, x: p.x, y: p.y, button: e.button, buttons: e.buttons, clickCount: e.detail, modifiers: this.mods(e) }); });
-    on('contextmenu', (e) => e.preventDefault());
+    // Forward the contextmenu (evType=3) to the engine: a synthesized right
+    // mousedown/up alone doesn't generate eContextMenu in the headless build, so
+    // without this no context menu ever opens (embed-xul.cpp do_mouse).
+    on('contextmenu', (e) => { e.preventDefault(); const p = this.xy(e); this.run({ op: OP_MOUSE, evType: 3, x: p.x, y: p.y, button: 2, buttons: e.buttons, modifiers: this.mods(e) }); });
     on('wheel', (e) => { const p = this.xy(e); this.run({ op: OP_WHEEL, x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY, modifiers: this.mods(e) }); e.preventDefault(); });
     // Printable keys carry their char code (matches the original embed-xul loader).
     // The engine doesn't insert text for Ctrl/Meta combos anyway (the editor's

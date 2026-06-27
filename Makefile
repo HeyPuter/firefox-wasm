@@ -23,13 +23,24 @@ ROOT        := $(CURDIR)
 FIREFOX_URL := https://github.com/MercuryWorkshop/firefox.git
 FIREFOX_REF := e67c6ef55fa342b78ec14824cbef56c4a42f641e
 
+# Pinned, repo-local emscripten. `make emsdk` clones the emsdk meta-repo here,
+# installs + activates this version, and applies the WasmFS WISP-socket patches
+# so WASMFS=1 builds keep working TCP sockets (patch-emsdk-wasmfs.mjs +
+# emsdk-patches/wisp_socket.h). The whole build (engine + libxul.js relink) runs
+# against $(EMSDK), exported below. Override EMSDK to reuse an existing install
+# (then run `make emsdk` once to patch it -- the patch is idempotent).
+EMSDK          ?= $(ROOT)/emsdk
+EMSDK_VERSION  ?= 6.0.1
+EMSDK_STAMP    := $(EMSDK)/.wisp-patched
+WISP_PATCH_SRC := libxul.js/build/patch-emsdk-wasmfs.mjs libxul.js/build/emsdk-patches/wisp_socket.h
+
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
 MOZBUILD_STATE_PATH ?= $(HOME)/.mozbuild
 # RELEASE=1 turns on optimizations: --enable-lto for the engine (mozconfig) and
 # -O3 at the emcc relink so wasm-opt's passes run over the final module.
 RELEASE             ?=
-export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH
+export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH EMSDK
 export GECKO_RELEASE := $(RELEASE)
 
 # Engine build output (RELEASE uses its own objdir, matching the mozconfig + the
@@ -49,9 +60,23 @@ LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 CONFIGURE_INPUTS := $(MOZCONFIG) $(EM_CONFIG)
 
 .PHONY: all release firefox vendor configure build web run clean distclean \
-        libxul embed-demo chrome-demo
+        libxul embed-demo chrome-demo emsdk
 
 all: libxul
+
+# Pull + install + activate the pinned emsdk locally, then apply the WasmFS
+# socket patches. The stamp depends on our patch sources, so editing them
+# re-patches (and invalidates the cached libwasmfs so it rebuilds). Installing
+# the toolchain downloads ~2GB the first time.
+emsdk: $(EMSDK_STAMP)
+$(EMSDK_STAMP): $(WISP_PATCH_SRC)
+	@if [ ! -x "$(EMSDK)/emsdk" ]; then \
+	  echo ">> cloning emsdk -> $(EMSDK)"; \
+	  git clone https://github.com/emscripten-core/emsdk.git "$(EMSDK)"; \
+	fi
+	cd "$(EMSDK)" && ./emsdk install $(EMSDK_VERSION) && ./emsdk activate $(EMSDK_VERSION)
+	node libxul.js/build/patch-emsdk-wasmfs.mjs
+	@touch "$@"
 
 # Optimized build (engine LTO + wasm-opt). NOTE: toggling RELEASE changes the
 # mozconfig (--enable-lto), which forces a full reconfigure + rebuild of libxul.
@@ -73,7 +98,7 @@ firefox/.git:
 vendor: firefox
 	python3 vendor-std-deps.py
 
-build: firefox vendor
+build: firefox vendor $(EMSDK_STAMP)
 	@# Keep mach from reconfiguring on unrelated mtime changes: if none of our
 	@# CONFIGURE_INPUTS are newer than config.status, touch it so it stays newer
 	@# than everything in config_status_deps.in (mach then skips configure). If a
@@ -100,7 +125,7 @@ build: firefox vendor
 # Force a reconfigure. Needed when you change something configure inspects that
 # isn't in CONFIGURE_INPUTS (e.g. after re-checking out firefox/): `build` above
 # only reconfigures when $(CONFIGURE_INPUTS) change, so use this otherwise.
-configure: firefox vendor
+configure: firefox vendor $(EMSDK_STAMP)
 	cd firefox && ./mach configure
 
 # Back-compat alias: the old embed-xul web build was removed; the web build IS the
@@ -114,7 +139,7 @@ run: embed-demo
 # Build the libxul.js package (the default `all` target): the engine artifacts
 # (build/build-lib.sh stages a MINIMAL gre-stage -> gecko.{js,wasm,data,worker.js})
 # + the rspack ESM bundle. Builds the engine (libxul.so) first if there isn't one.
-libxul:
+libxul: $(EMSDK_STAMP)
 	@test -e "$(LIBXUL)" || $(MAKE) build
 	pnpm install
 	pnpm --filter libxul.js run build
