@@ -34,8 +34,12 @@ ac_add_options --disable-debug
 ac_add_options --enable-optimize
 # Release (GECKO_RELEASE=1, set by `make release` / `make ... RELEASE=1`):
 # link-time-optimize the engine. Toggling this reconfigures + rebuilds libxul.
+# Use ThinLTO (not full/monolithic LTO): full LTO merges the whole program into one
+# module and the libxul `-shared` link spikes past available RAM -> OOM-killed (the
+# CI link got SIGTERM'd mid-link). ThinLTO does cross-module opt via per-module
+# summaries in parallel, fitting in memory for a ~couple-% optimization cost.
 if [ "${GECKO_RELEASE:-}" = "1" ]; then
-  ac_add_options --enable-lto
+  ac_add_options --enable-lto=thin
 fi
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
