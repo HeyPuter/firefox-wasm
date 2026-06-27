@@ -55,10 +55,27 @@ jobs:
       - name: Install build prerequisites (clang/libclang for bindgen, etc.)
         run: |
           sudo apt-get update
+          # Host toolchain + misc build deps. `clang`/`clang++` here only serve
+          # mozconfig's HOST_CC/HOST_CXX (host-side codegen tools) -- their version
+          # is irrelevant. The bindgen libclang is installed separately below.
           sudo apt-get install -y --no-install-recommends \
-            clang llvm-dev libclang-dev libpulse-dev python3 mercurial unzip zstd
+            clang llvm-dev libpulse-dev python3 mercurial unzip zstd \
+            wget lsb-release gnupg software-properties-common
+          # bindgen (gecko-profiler + other rust crates) parses emscripten 6.0.1's
+          # libc++ headers, which are LLVM 23 and use clang>=19 builtins: __is_convertible
+          # (older clang errors "'_Tp' does not refer to a value") and __builtin_ctzg/
+          # __builtin_clzg ("use of undeclared identifier"). Ubuntu's stock libclang is
+          # 18 -- too old -- so bindgen fails with "Unable to generate bindings" and the
+          # whole engine build dies at force-cargo-library-build long before libxul links.
+          # Install a matching-era libclang (21, same as mach-bootstrap's clang, which is
+          # what works locally) from apt.llvm.org and point bindgen at it via LIBCLANG_PATH.
+          LLVM_VER=21
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${LLVM_VER}
+          sudo apt-get install -y --no-install-recommends libclang-${LLVM_VER}-dev
           # mozconfig.full.emscripten reads $LIBCLANG_PATH for --with-libclang-path.
-          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-${LLVM_VER}/lib" >> "$GITHUB_ENV"
 
       # Install emscripten from a FRESH emsdk clone (its bundled tags know 6.0.x; an
       # older/cached emsdk may not). em_config reads $EMSDK and resolves binaryen at
@@ -103,9 +120,7 @@ jobs:
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
-      - name: "Build the engine + gecko.js (release: LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
-        env:
-          NO_WASM_OPT: '1'   # TEMP: skip the whole-module wasm-opt pass (OOMs/SIGSEGVs in CI); remove to re-enable
+      - name: "Build the engine + gecko.js (release: LTO + zstd + wasm-opt) — long"
         run: |
           # wasm-opt's recursive passes overflow the default 8MB stack on the
           # ~250MB module and die with SIGSEGV. Raise the stack limit for the whole
