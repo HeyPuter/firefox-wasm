@@ -1,0 +1,36 @@
+{
+  "name": "gecko.js",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Embeddable Gecko (Firefox engine) compiled to WebAssembly. ESM library exporting a Gecko API class.",
+  "main": "./dist/gecko.js",
+  "module": "./dist/gecko.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/gecko.js",
+      "default": "./dist/gecko.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "wasm"
+  ],
+  "scripts": {
+    "build:engine": "bash build/build-lib.sh",
+    "build:bundle": "rspack build",
+    "build:types": "tsc",
+    "build": "pnpm run build:engine && pnpm run build:bundle && pnpm run build:types",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zstddec": "^0.2.0"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^1.1.0",
+    "@rspack/core": "^1.1.0",
+    "typescript": "^5.6.0"
+  }
+}
