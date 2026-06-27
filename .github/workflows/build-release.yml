@@ -121,6 +121,8 @@ jobs:
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
       - name: "Build the engine + gecko.js (release: LTO + zstd + wasm-opt) — long"
+        env: 
+          NO_WASM_OPT: '1'
         run: |
           # wasm-opt's recursive passes overflow the default 8MB stack on the
           # ~250MB module and die with SIGSEGV. Raise the stack limit for the whole
