@@ -7,9 +7,9 @@ import os from 'node:os';
 import { server as wisp } from '@mercuryworkshop/wisp-js/server';
 
 const require = createRequire(import.meta.url);
-const libDist = path.join(path.dirname(require.resolve('libxul.js/package.json')), 'dist');
-// libxul.js inlines gecko.js + gecko.worker.js + gecko.data; chrome-demo serves
-// whichever wasm artifact the current libxul.js build produced.
+const libDist = path.join(path.dirname(require.resolve('gecko.js/package.json')), 'dist');
+// gecko.js inlines gecko.js + gecko.worker.js + gecko.data; chrome-demo serves
+// whichever wasm artifact the current gecko.js build produced.
 const ENGINE = ['gecko.wasm', 'gecko.wasm.zst'];
 const mime = (n: string) =>
   n.endsWith('.wasm') ? 'application/wasm' :
@@ -169,9 +169,9 @@ const coop = {
 
 export default defineConfig({
   plugins: [serveEngine(), packageGreExtra(), wispProxy()],
-  // libxul.js is a workspace package under active rebuild; don't pre-bundle/cache
-  // it, so a plain reload picks up a fresh dist/libxul.js (no `vite --force`).
-  optimizeDeps: { exclude: ['libxul.js'] },
+  // gecko.js is a workspace package under active rebuild; don't pre-bundle/cache
+  // it, so a plain reload picks up a fresh dist/gecko.js (no `vite --force`).
+  optimizeDeps: { exclude: ['gecko.js'] },
   // main.ts uses top-level await (await gecko.init()); keep the build target
   // modern so `vite build` doesn't reject it (dev already uses esnext).
   build: { target: 'esnext' },

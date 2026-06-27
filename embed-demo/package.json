@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "libxul.js": "workspace:*"
+    "gecko.js": "workspace:*"
   },
   "devDependencies": {
     "@mercuryworkshop/wisp-js": "^0.4.1",

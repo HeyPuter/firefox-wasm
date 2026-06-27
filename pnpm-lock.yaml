@@ -10,9 +10,9 @@ importers:
 
   chrome-demo:
     dependencies:
-      libxul.js:
+      gecko.js:
         specifier: workspace:*
-        version: link:../libxul.js
+        version: link:../gecko.js
       zstddec:
         specifier: ^0.2.0
         version: 0.2.0
@@ -26,9 +26,9 @@ importers:
 
   embed-demo:
     dependencies:
-      libxul.js:
+      gecko.js:
         specifier: workspace:*
-        version: link:../libxul.js
+        version: link:../gecko.js
     devDependencies:
       '@mercuryworkshop/wisp-js':
         specifier: ^0.4.1
@@ -37,7 +37,7 @@ importers:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@26.0.0)
 
-  libxul.js:
+  gecko.js:
     dependencies:
       zstddec:
         specifier: ^0.2.0

@@ -4,19 +4,19 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { server as wisp } from '@mercuryworkshop/wisp-js/server';
 
-// libxul.js ships the emscripten engine artifacts next to its bundle (dist/).
+// gecko.js ships the emscripten engine artifacts next to its bundle (dist/).
 const require = createRequire(import.meta.url);
-const libDist = path.join(path.dirname(require.resolve('libxul.js/package.json')), 'dist');
-// libxul.js inlines gecko.js + gecko.worker.js + the zstd gecko.data + the manifest;
+const libDist = path.join(path.dirname(require.resolve('gecko.js/package.json')), 'dist');
+// gecko.js inlines gecko.js + gecko.worker.js + the zstd gecko.data + the manifest;
 // the ONLY artifact the consumer serves is the wasm -- raw gecko.wasm (debug) or
-// gecko.wasm.zst (release). Serve/emit whichever libxul.js actually built.
+// gecko.wasm.zst (release). Serve/emit whichever gecko.js actually built.
 const ENGINE = ['gecko.wasm', 'gecko.wasm.zst'];
 const mime = (n: string) =>
   n.endsWith('.wasm') ? 'application/wasm' :
   n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
 
 // Serve the engine artifacts at the server root (/gecko.*) in dev, and emit them
-// into the build output. (libxul.js's loadEngine injects <script src="/gecko.js">
+// into the build output. (gecko.js's loadEngine injects <script src="/gecko.js">
 // and locateFile resolves /gecko.wasm etc. relative to it.)
 function libxulEngine(): Plugin {
   return {
@@ -68,9 +68,9 @@ const coop = {
 
 export default defineConfig({
   plugins: [libxulEngine(), wispProxy()],
-  // libxul.js is a workspace package under active rebuild; don't pre-bundle/cache
-  // it, so a plain reload picks up a fresh dist/libxul.js (no `vite --force`).
-  optimizeDeps: { exclude: ['libxul.js'] },
+  // gecko.js is a workspace package under active rebuild; don't pre-bundle/cache
+  // it, so a plain reload picks up a fresh dist/gecko.js (no `vite --force`).
+  optimizeDeps: { exclude: ['gecko.js'] },
   // main.ts uses top-level await (await gecko.init()/load()); keep the build target
   // modern so `vite build` doesn't reject it (dev already uses esnext).
   build: { target: 'esnext' },

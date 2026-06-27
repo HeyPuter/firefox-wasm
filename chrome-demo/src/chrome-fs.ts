@@ -18,7 +18,7 @@ export interface ChromeAssetsProgress {
 }
 type ProgressCallback = (progress: ChromeAssetsProgress) => void;
 
-// libxul.js bakes the minimal GRE into gecko.data but EXCLUDES the Firefox
+// gecko.js bakes the minimal GRE into gecko.data but EXCLUDES the Firefox
 // front-end (browser/), which the chrome build needs as its APP dir
 // (/gre/browser, selected by GECKO_CHROME=1). chrome-demo ships the pre-strip
 // non-binary GRE resources plus browser/ as a tar.zst and expands it into an OPFS

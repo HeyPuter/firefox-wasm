@@ -1,9 +1,9 @@
 name: build-and-release
 
-# Builds the full Gecko->wasm engine and the libxul.js package, then attaches the
-# packaged library (dist/libxul.js + dist/gecko.wasm + the wasm/ engine artifacts)
+# Builds the full Gecko->wasm engine and the gecko.js package, then attaches the
+# packaged library (dist/gecko.js + dist/gecko.wasm + the wasm/ engine artifacts)
 # to a GitHub Release. (embed-xul/ + embed-chrome/ are legacy stubs and are NOT built
-# here -- the maintained package is libxul.js/.)
+# here -- the maintained package is gecko.js/.)
 #
 # !!! HEAVY BUILD — READ FIRST !!!
 # A full Gecko->wasm build is enormous: ~26 GB objdir, a ~3.4 GB (relocatable) libxul.so,
@@ -82,7 +82,7 @@ jobs:
           components: rust-src
           targets: wasm32-unknown-emscripten
 
-      # libxul.js's package build (rspack bundle) runs under pnpm; the repo pins
+      # gecko.js's package build (rspack bundle) runs under pnpm; the repo pins
       # pnpm via package.json "packageManager", so let corepack provide it.
       - name: Set up Node + pnpm ${{ env.PNPM_VERSION }}
         uses: actions/setup-node@v4
@@ -103,7 +103,7 @@ jobs:
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
-      - name: "Build the engine + libxul.js (release: LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
+      - name: "Build the engine + gecko.js (release: LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
         env:
           NO_WASM_OPT: '1'   # TEMP: skip the whole-module wasm-opt pass (OOMs/SIGSEGVs in CI); remove to re-enable
         run: |
@@ -112,7 +112,7 @@ jobs:
           # make -> mach -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
           # Also needed for the libxul.so relink: emscripten 6.0.1's wasm-ld SIGSEGVs
           # on the `-shared` link, so `make build` relinks the engine libs as `-r`
-          # relocatable objects (libxul.js/build/relink-engine-r.sh, run between two
+          # relocatable objects (gecko.js/build/relink-engine-r.sh, run between two
           # `mach build` passes) -- handled inside `make`, no extra step here.
           ulimit -s unlimited || ulimit -s 524288 || true
           make libxul RELEASE=1   # firefox cloned; vendor -> mach build (+relink) -> build-lib.sh -> rspack
@@ -120,39 +120,39 @@ jobs:
       - name: Show link errors on failure
         if: failure()
         run: |
-          echo "=== libxul.js/build/link.err (tail) ==="
-          tail -n 60 libxul.js/build/link.err 2>/dev/null || echo "(no link.err)"
+          echo "=== gecko.js/build/link.err (tail) ==="
+          tail -n 60 gecko.js/build/link.err 2>/dev/null || echo "(no link.err)"
 
-      - name: Package the libxul.js library (the runnable ESM bundle)
+      - name: Package the gecko.js library (the runnable ESM bundle)
         run: |
-          PKG=stage/libxul.js
+          PKG=stage/gecko.js
           mkdir -p "$PKG"
           # The runnable/publishable artifact is dist/ (the ESM bundle + the single
           # served gecko.wasm[.zst]) + package.json. The wasm/ dir is build intermediates
-          # -- gecko.js/worker.js/gecko.data are INLINED into dist/libxul.js, so only
+          # -- gecko.js/worker.js/gecko.data are INLINED into dist/gecko.js, so only
           # dist/gecko.wasm[.zst] is served separately; no need to ship wasm/.
-          cp -r libxul.js/dist libxul.js/package.json "$PKG/"
-          cp libxul.js/README.md "$PKG/" 2>/dev/null || true
+          cp -r gecko.js/dist gecko.js/package.json "$PKG/"
+          cp gecko.js/README.md "$PKG/" 2>/dev/null || true
           cat > "$PKG/RELEASE.txt" <<'TXT'
-          libxul.js — embeddable Gecko (the Firefox engine) compiled to WebAssembly (emscripten 6.0.1).
-          The ESM bundle (dist/libxul.js) inlines the glue + gecko.data; consumers serve only the wasm
+          gecko.js — embeddable Gecko (the Firefox engine) compiled to WebAssembly (emscripten 6.0.1).
+          The ESM bundle (dist/gecko.js) inlines the glue + gecko.data; consumers serve only the wasm
           (dist/gecko.wasm or, in this release build, dist/gecko.wasm.zst — decompressed in-browser).
           Must be served cross-origin-isolated (COOP: same-origin + COEP: require-corp) for SharedArrayBuffer.
           See README / the embed-demo for usage: `new Gecko({ canvas, wispUrl }); await g.init(); g.load(url)`.
           TXT
-          tar -C stage -czf libxul.js-${{ github.ref_name }}.tar.gz libxul.js
-          ls -la libxul.js-*.tar.gz
+          tar -C stage -czf gecko.js-${{ github.ref_name }}.tar.gz gecko.js
+          ls -la gecko.js-*.tar.gz
 
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: libxul.js-${{ github.ref_name }}
-          path: libxul.js-*.tar.gz
+          name: gecko.js-${{ github.ref_name }}
+          path: gecko.js-*.tar.gz
           if-no-files-found: error
 
       - name: Publish GitHub Release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: libxul.js-*.tar.gz
+          files: gecko.js-*.tar.gz
           generate_release_notes: true

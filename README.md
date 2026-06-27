@@ -6,14 +6,14 @@
 
 need packages installed
 - libpulse-dev
-- node + pnpm (for the libxul.js bundle)
+- node + pnpm (for the gecko.js bundle)
 
 - emsdk install 6.0.1
 - emsdk activate 6.0.1
 - rustup target add wasm32-unknown-emscripten
 - make firefox
 - make vendor
-- make            # builds the libxul.js package
+- make            # builds the gecko.js package
 
 
 
@@ -23,7 +23,7 @@ Mozilla's Gecko engine (Firefox/SpiderMonkey) ported to browser **WebAssembly**
 (emscripten, `wasm32-unknown-emscripten`): single-process, no e10s, no JIT
 (Portable Baseline Interpreter), WISP networking, rendering web content to a
 `<canvas>`. `firefox/` is a fork of `mozilla-firefox/firefox` carrying the
-in-tree port patches; **`libxul.js/`** is the embeddable package (the engine
+in-tree port patches; **`gecko.js/`** is the embeddable package (the engine
 artifacts + an ESM API), consumed by the `embed-demo/` and `chrome-demo/` Vite
 demos. (The old `embed-xul/` + `embed-chrome/` stub dirs have been removed.)
 
@@ -33,8 +33,8 @@ demos. (The old `embed-xul/` + `embed-chrome/` stub dirs have been removed.)
 
 | script | does |
 |---|---|
-| `make build` | configure + compile the whole engine → `obj-full-emscripten/dist/bin/libxul.so`, then relink libxul/libnss3/libgkcodecs as `-r` relocatable objects (`libxul.js/build/relink-engine-r.sh`; an emscripten 6.0.1 wasm-ld `-shared` workaround, run between two `mach build` passes). |
-| `make libxul` (default `make`) | build the engine (if needed) then the libxul.js package: stage a MINIMAL GRE + emcc-link `libxul.js/build/embed-xul.cpp` + `libxul` → `libxul.js/wasm/gecko.{js,wasm,data,worker.js}`, then the rspack ESM bundle → `libxul.js/dist/`. |
+| `make build` | configure + compile the whole engine → `obj-full-emscripten/dist/bin/libxul.so`, then relink libxul/libnss3/libgkcodecs as `-r` relocatable objects (`gecko.js/build/relink-engine-r.sh`; an emscripten 6.0.1 wasm-ld `-shared` workaround, run between two `mach build` passes). |
+| `make libxul` (default `make`) | build the engine (if needed) then the gecko.js package: stage a MINIMAL GRE + emcc-link `gecko.js/build/embed-xul.cpp` + `libxul` → `gecko.js/wasm/gecko.{js,wasm,data,worker.js}`, then the rspack ESM bundle → `gecko.js/dist/`. |
 | `make embed-demo` / `make chrome-demo` | build the library, then run its Vite demo (serves with COOP/COEP — required for `SharedArrayBuffer` / cross-origin isolation — and a WISP proxy at `/wisp/`). `make run` is an alias for `embed-demo`. |
 
 Everything below is **NOT** done by those scripts — it's environment/toolchain
@@ -52,7 +52,7 @@ that are intentionally gitignored.
 - **Rust** `rustc` **1.95.0**, with:
   - `rustup target add wasm32-unknown-emscripten`
   - `rustup component add rust-src` (needed for `-Z build-std`, see step 2)
-- **Node + pnpm** (`pnpm@9.12.0`, via corepack) — for the libxul.js rspack bundle
+- **Node + pnpm** (`pnpm@9.12.0`, via corepack) — for the gecko.js rspack bundle
   and the Vite demos.
 - **Playwright** — only for the dev/test harness in `llm_tests/`; reuses a Chromium
   from `~/src/puter/node_modules/playwright`.
@@ -61,7 +61,7 @@ that are intentionally gitignored.
 
 > The build is path-independent: `em_config` derives its paths from `$EMSDK` +
 > `PATH`, `mozconfig.full.emscripten` derives the objdir and FreeType include from
-> `$topsrcdir`, and `libxul.js/build/` locates the objdir relative to itself — so
+> `$topsrcdir`, and `gecko.js/build/` locates the objdir relative to itself — so
 > nothing needs editing wherever you clone. libclang defaults to mach bootstrap's
 > copy (`$MOZBUILD_STATE_PATH/clang/lib`); export `LIBCLANG_PATH` to use a
 > distro/CI libclang instead.
@@ -98,16 +98,16 @@ verify" message, this vendoring is incomplete — re-run the script.
 ## 3. Build
 
 From the repo root, `make` drives the whole pipeline (firefox → vendor → engine →
-libxul.js bundle):
+gecko.js bundle):
 
 ```sh
 make            # = make libxul: engine (obj-full-emscripten/dist/bin/libxul.so) + the
-                #   libxul.js package (libxul.js/dist/). ~25–50 min for a cold engine build.
+                #   gecko.js package (gecko.js/dist/). ~25–50 min for a cold engine build.
 make build      # rebuild just the engine (e.g. after editing firefox/ sources), incl. the -r relink
 make configure  # force a reconfigure (after a mozconfig / moz.build / moz.configure change)
 ```
 
-`make build` runs `mach build` twice with `libxul.js/build/relink-engine-r.sh` in
+`make build` runs `mach build` twice with `gecko.js/build/relink-engine-r.sh` in
 between: emscripten 6.0.1's wasm-ld SIGSEGVs on the `-shared` libxul link, so the
 engine libs are relinked as `-r` relocatable objects (which the embedder
 static-links into one module) and a second `mach build` finishes the resource tiers.
@@ -121,7 +121,7 @@ make chrome-demo  # same, for the full Firefox front-end demo
 ```
 
 `make run` is an alias for `make embed-demo`. Consume the built package directly with
-`import { Gecko } from 'libxul.js'` — `new Gecko({ canvas, wispUrl }); await g.init();
+`import { Gecko } from 'gecko.js'` — `new Gecko({ canvas, wispUrl }); await g.init();
 g.load(url)` (GPU via `env.GECKO_GPU`, content-WebGL passthrough via
 `env.GECKO_GL_PASSTHROUGH`).
 
@@ -135,10 +135,10 @@ g.load(url)` (GPU via `env.GECKO_GPU`, content-WebGL passthrough via
 - `firefox/` is the Gecko engine fork (`MercuryWorkshop/firefox`) — not committed
   here; **`make firefox`** shallow-clones it (depth 1) at the pinned commit
   (`FIREFOX_REF` in the `Makefile`). `make` runs the whole pipeline
-  (firefox → vendor → build → libxul.js bundle).
+  (firefox → vendor → build → gecko.js bundle).
 - Gitignored & regenerable (not published): `obj-*-emscripten/` build trees, the
-  std-vendor crates (step 2), and the build outputs (`libxul.js/wasm/gecko.*`,
-  `libxul.js/dist/`, `libxul.js/build/lib*.stripped.so` + `gre-stage/`, logs).
+  std-vendor crates (step 2), and the build outputs (`gecko.js/wasm/gecko.*`,
+  `gecko.js/dist/`, `gecko.js/build/lib*.stripped.so` + `gre-stage/`, logs).
 - Dev/verifier scripts live in `llm_tests/` (legacy, embed-xul-era). Each runs its
   own inline server rooted at its directory, so to run one it needs build outputs
   (`index.html`, `gecko.*`) staged alongside it.

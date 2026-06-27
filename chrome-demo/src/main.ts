@@ -1,4 +1,4 @@
-import { Gecko } from 'libxul.js';
+import { Gecko } from 'gecko.js';
 import { prepareChromeFs, GRE_OPFS_PATH, PROFILE_OPFS_PATH, type ChromeAssetsProgress } from './chrome-fs';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
@@ -167,6 +167,10 @@ try {
   canvas.classList.add('ready');
   splash.classList.add('done');
   canvas.focus();
+
+  // Debug/test hook: open a site in a tab from the console (mirrors embed-demo's
+  // window.geckoLoad). The chrome's own address bar is the normal way in.
+  (window as unknown as { geckoLoad: (u: string) => unknown }).geckoLoad = (u) => gecko.load(u);
 
   // Keep the engine sized to the viewport. The window may have changed during the
   // (slow) boot, so correct once now, then track resizes with a ~200ms debounce

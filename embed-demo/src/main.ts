@@ -1,4 +1,4 @@
-import { Gecko } from 'libxul.js';
+import { Gecko } from 'gecko.js';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const urlInput = document.getElementById('url') as HTMLInputElement;
@@ -73,7 +73,7 @@ urlInput.addEventListener('keydown', (e) => {
 // Initial page: an inline welcome doc (renders with no proxy).
 const page = `<!doctype html><meta charset="utf-8">
 <body style="font-family:sans-serif;padding:2rem;line-height:1.5">
-  <h1 style="color:#b5179e;margin-top:0">libxul.js</h1>
+  <h1 style="color:#b5179e;margin-top:0">gecko.js</h1>
   <p>This page is being laid out and painted by <b>Gecko</b> — Firefox's engine,
      compiled to WebAssembly — entirely inside your browser tab.</p>
   <p>Type a URL above and press Enter. <code>about:</code>/<code>data:</code> URLs

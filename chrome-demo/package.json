@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "libxul.js": "workspace:*",
+    "gecko.js": "workspace:*",
     "zstddec": "^0.2.0"
   },
   "devDependencies": {
