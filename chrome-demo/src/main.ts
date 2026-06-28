@@ -129,6 +129,13 @@ if (opts.gpu) {
 }
 if (!opts.jit) optEnv.GECKO_NOWASMJIT = '1';
 
+// Generic `?env.FOO=bar` knob (mirrors embed-demo): forward arbitrary engine env
+// vars from the URL, e.g. ?env.GECKO_WASM_INTERP=1 to run content WebAssembly in
+// the in-process interpreter instead of the host passthrough.
+for (const [k, v] of new URLSearchParams(location.search)) {
+  if (k.startsWith('env.')) optEnv[k.slice(4)] = v;
+}
+
 await prepareChromeFs(setProgress);
 setProgress({ phase: 'ready', percent: 1, message: 'Starting Gecko' });
 console.log('[chrome-demo] chrome assets ready');

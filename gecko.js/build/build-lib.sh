@@ -63,11 +63,15 @@ EXTRA=( "$HERE/libnss3.stripped.so" "$HERE/libgkcodecs.stripped.so" )
 EMSETTINGS=(
   "$LINK_OPT" --profiling-funcs
   -sASSERTIONS=1 -sSTACK_OVERFLOW_CHECK=1 -sERROR_ON_UNDEFINED_SYMBOLS=0
+  # Allocator: mimalloc instead of emscripten's default dlmalloc. Gecko is extremely
+  # allocation-heavy and MOZ_MEMORY (mozjemalloc) is off on wasm, so every alloc hits
+  # the emscripten malloc; mimalloc is markedly faster and thread-aware (fits -pthread).
+  -sMALLOC=mimalloc
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=4294967296
-  -sSTACK_SIZE=8388608 -sEXIT_RUNTIME=0
+  -sSTACK_SIZE=67108864 -sEXIT_RUNTIME=0
   -pthread -sPTHREAD_POOL_SIZE=20 -sPTHREAD_POOL_SIZE_STRICT=0
   -sMODULARIZE=1 -sEXPORT_NAME=createGecko
-  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots
+  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots,_InterpTraceRoots
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency,HEAPU8,HEAP32
   # WasmFS (the new FS impl). Its socket syscalls are reinstated by the WISP
   # backend patched into libwasmfs (emsdk-patches/wisp_socket.h); wisp-net.js is
@@ -76,6 +80,10 @@ EMSETTINGS=(
   --js-library "$HERE/wisp-net.js"
   --js-library "$HERE/provider-fs.js"
   --js-library "$HERE/wasm-host-bridge.js"
+  # Web Audio output: the wasm cubeb backend (firefox cubeb_wasmaudio.c) pulls PCM
+  # into a shared-heap ring; this library drains it via a host AudioWorklet into an
+  # AudioContext (emaudio_* run proxied on the main thread).
+  --js-library "$HERE/audio-out.js"
   # GPU present yield (gl-present.js): gl_present_yield is wired to JSPI MANUALLY in
   # the glue (patch-gecko-shaderfix.mjs) -- WebAssembly.Suspending on this one import
   # + WebAssembly.promising on the proxy/mailbox executors that reach SwapBuffers. We

@@ -13,7 +13,7 @@ const libDist = path.join(path.dirname(require.resolve('gecko.js/package.json'))
 const ENGINE = ['gecko.wasm', 'gecko.wasm.zst'];
 const mime = (n: string) =>
   n.endsWith('.wasm') ? 'application/wasm' :
-  n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
+    n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
 
 // The GRE files live in the engine objdir's dist/bin. gecko.data is intentionally
 // stripped to stay minimal, so chrome-demo ships the same non-binary GRE resource
@@ -33,11 +33,17 @@ const GRE_EXCLUDES = [
   '*.data',
   '*.dbg',
   '*.symbols',
-  'firefox',
-  'firefox-bin',
-  'pingsender',
-  'nsinstall',
-  'nsinstall_real',
+  // Anchor the executable names to the rsync transfer ROOT (leading slash) so they
+  // drop only dist/bin/<exe>, NOT nested directories that share the name. A bare
+  // `firefox` matched any path component and wrongly excluded the devtools
+  // debugger's client/firefox/ (commands.js, create.js) and netmonitor's
+  // src/utils/firefox/ -> the debugger devtools panel was blank with "Missing chrome
+  // or resource URL: resource://devtools/client/debugger/src/client/firefox/commands.js".
+  '/firefox',
+  '/firefox-bin',
+  '/pingsender',
+  '/nsinstall',
+  '/nsinstall_real',
 ];
 
 function serveEngine(): Plugin {
@@ -91,7 +97,7 @@ function ensureChromeAssetsArchive(): void {
   const manifestMtime = fs.existsSync(ASSET_MANIFEST) ? fs.statSync(ASSET_MANIFEST).mtimeMs : 0;
   const clobberMtime = fs.statSync(CLOBBER_FILE).mtimeMs;
   if (archiveMtime >= newestSource && archiveMtime >= clobberMtime &&
-      manifestMtime >= newestSource && manifestMtime >= clobberMtime) return;
+    manifestMtime >= newestSource && manifestMtime >= clobberMtime) return;
 
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-assets-'));
   const tarPath = path.join(stage, 'chrome-assets.tar');
@@ -146,6 +152,7 @@ function wispProxy(): Plugin {
   return {
     name: 'wisp-proxy',
     configureServer(server) {
+      wisp.options.allow_loopback_ips = true;
       server.httpServer?.on('upgrade', (req, socket, head) => {
         if ((req.url || '').startsWith('/wisp')) {
           wisp.routeRequest(req, socket as any, head);

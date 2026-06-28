@@ -2,6 +2,9 @@
 // minimal embedding needs, plus all the runtime prefs/services XRE_main would set.
 // Split from the monolithic embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
+#include "nsUserIdleService.h"
+#include "mozilla/GenericFactory.h"
+#include "mozilla/ModuleUtils.h"
 // For the chrome build, NS_InitXPCOM is given binDir = the APP dir (/gre/browser)
 // so resource:/// (NS_XPCOM_CURRENT_PROCESS_DIR) resolves to the Firefox front-end
 // (its modules/sessionstore/... live under /gre/browser), while NS_GRE_DIR stays at
@@ -80,6 +83,32 @@ class EmbedAppShellFactory final : public nsIFactory {
 };
 NS_IMPL_ISUPPORTS(EmbedAppShellFactory, nsIFactory)
 
+// The cairo-headless toolkit registers no platform user-idle service
+// (@mozilla.org/widget/useridleservice;1 lives in widget/{gtk,...}/components.conf,
+// none built here). Front-end code does
+// `Cc['@mozilla.org/widget/useridleservice;1'].getService(...)` -- e.g.
+// SessionStore's SessionSaver.sys.mjs -- and throws "Cc[...] is undefined" when the
+// contract is unregistered. Register the GENERIC nsUserIdleService: its base
+// PollIdleTime() returns false (no OS idle polling, correct for headless; idle is
+// still tracked via the internal timer / ResetIdleTimeOut machinery), so consumers
+// get a working nsIUserIdleService. A trivial subclass exposes the protected base
+// constructor for the generic factory.
+class EmbedUserIdleService final : public nsUserIdleService {
+ public:
+  EmbedUserIdleService() = default;
+
+ protected:
+  ~EmbedUserIdleService() override = default;
+};
+NS_GENERIC_FACTORY_CONSTRUCTOR(EmbedUserIdleService)
+// Fresh CID for our factory; consumers use the contract id, not this CID.
+#define EMBED_USERIDLE_CID                           \
+  {                                                  \
+    0x6f3a1c84, 0x9b2d, 0x4e57, {                    \
+      0xa1, 0x0c, 0x3d, 0x82, 0x6b, 0x4f, 0x91, 0xe3 \
+    }                                                \
+  }
+
 // Defined in widget/nsTransferable.cpp (emscripten only): registers the widget
 // components the cairo-headless toolkit omits (transferable / format converter /
 // clipboard helper).
@@ -100,10 +129,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // here: xul_init runs on the app pthread (PROXY_TO_PTHREAD), not the browser main
   // thread -- creating the backend on the main thread would deadlock waiting for the
   // OPFS worker to spawn (see emscripten/wasmfs.h).
-  if (getenv("GECKO_OPFS_MOUNT")) {
+  // GECKO_SKIP_OPFS: diagnostic for the nested (interpreter-in-interpreter)
+  // case. Creating the OPFS backend proxies to spawn an OPFS worker and the app
+  // pthread blocks for it; under the in-process interpreter the inner app pthread
+  // runs synchronously and cannot yield, so this deadlocks. Skipping it falls the
+  // profile back to the default in-memory WasmFS backend (mkdir creates /opfs/*).
+  if (getenv("GECKO_OPFS_MOUNT") && !getenv("GECKO_SKIP_OPFS")) {
     backend_t ob = wasmfs_create_opfs_backend();
     int orv = wasmfs_create_directory("/opfs", 0777, ob);
     printf("xul_init: mounted /opfs (native OPFS backend) rv=%d\n", orv);
+    fflush(stdout);
+  } else {
+    printf("xul_init: OPFS mount skipped (GECKO_SKIP_OPFS or no mount)\n");
     fflush(stdout);
   }
 
@@ -148,10 +185,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // can exist.) The prefs set later in xul_init are belt-and-suspenders.
   setenv("MOZ_FORCE_DISABLE_E10S", "1", 1);
 
+  printf("xul_init: DBG post-mounts chrome=%d, making binDir\n", chrome);
+  fflush(stdout);
   nsAutoCString binPath(greDir);
   if (chrome) binPath.AppendLiteral("/browser");
   nsCOMPtr<nsIFile> binDir;
   nsresult rv = NS_NewNativeLocalFile(binPath, getter_AddRefs(binDir));
+  printf("xul_init: DBG NS_NewNativeLocalFile rv=0x%08x\n", (unsigned)rv);
+  fflush(stdout);
   if (NS_FAILED(rv)) {
     printf("xul_init: NS_NewNativeLocalFile FAILED rv=0x%08x\n", (unsigned)rv);
     fflush(stdout);
@@ -174,6 +215,29 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // widget/{gtk,...}/components.conf, none built here). Register them at runtime
     // so editor copy/cut/paste can build transferables. See widget/nsTransferable.cpp.
     WasmRegisterWidgetComponents();
+
+    // Register the headless user-idle service (see EmbedUserIdleService above) so
+    // @mozilla.org/widget/useridleservice;1 resolves -- otherwise SessionSaver and
+    // other front-end consumers throw "Cc[...] is undefined".
+    {
+      nsCOMPtr<nsIComponentRegistrar> ireg;
+      NS_GetComponentRegistrar(getter_AddRefs(ireg));
+      bool idlePresent = false;
+      if (ireg &&
+          !(NS_SUCCEEDED(ireg->IsContractIDRegistered(
+                "@mozilla.org/widget/useridleservice;1", &idlePresent)) &&
+            idlePresent)) {
+        static NS_DEFINE_CID(kIdleCID, EMBED_USERIDLE_CID);
+        RefPtr<mozilla::GenericFactory> ifac =
+            new mozilla::GenericFactory(EmbedUserIdleServiceConstructor);
+        nsresult irv =
+            ireg->RegisterFactory(kIdleCID, "UserIdleService",
+                                  "@mozilla.org/widget/useridleservice;1", ifac);
+        printf("xul_init: registered headless user-idle service rv=0x%08x\n",
+               (unsigned)irv);
+        fflush(stdout);
+      }
+    }
 
     // Populate Services.appinfo (nsIXULAppInfo). XRE_main normally sets the global
     // gAppData from the app's nsXREAppData; this minimal embedding skips XRE, so

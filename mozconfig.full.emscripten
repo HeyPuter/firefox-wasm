@@ -31,7 +31,11 @@ ac_add_options --disable-shared-memory
 # Trim the surface for a first headless build.
 ac_add_options --disable-tests
 ac_add_options --disable-debug
-ac_add_options --enable-optimize
+# Explicit -O2 (was bare --enable-optimize -> MOZ_OPTIMIZE_FLAGS=-O ~= -O1). -O2
+# gives the interpreter + engine substantially faster generated code, which
+# matters because content wasm runs interpreted (GECKO_WASM_INTERP) and the
+# engine itself is wasm; the extra build cost is a one-time recompile.
+ac_add_options --enable-optimize=-O2
 # Engine LTO is OPT-IN (GECKO_LTO=1) and deliberately NOT implied by RELEASE. The
 # libxul LTO link needs >54 GiB under emscripten 6.0.1 and OOM-kills the standard CI
 # runner (8 cores / 31 GiB) even as ThinLTO with a --thinlto-jobs cap AND 23 GiB swap
