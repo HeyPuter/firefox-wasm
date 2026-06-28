@@ -62,6 +62,15 @@ EXTRA=( "$HERE/libnss3.stripped.so" "$HERE/libgkcodecs.stripped.so" )
 
 EMSETTINGS=(
   "$LINK_OPT" --profiling-funcs
+  # Keep the JS glue UNMINIFIED even in release. The post-link patches in
+  # patch-gecko-shaderfix.mjs (shader hoist + proxied-JS completion + gl_present_yield
+  # Suspending + invokeEntryPoint promising) match LITERAL generated-glue source. At
+  # -O2+ emscripten enables MINIFY_WHITESPACE, which strips the spaces/newlines those
+  # regexes rely on -> "could not find the _glShaderSource call site". --minify 0
+  # disables ONLY JS whitespace minification; the wasm is still fully -O3 / wasm-opt
+  # optimized, and rspack re-minifies the glue into dist/ anyway. No-op at -O0. (No name
+  # minification happens here: emscripten's minifyNames is wasm2js-only + off under -pthread.)
+  --minify 0
   -sASSERTIONS=1 -sSTACK_OVERFLOW_CHECK=1 -sERROR_ON_UNDEFINED_SYMBOLS=0
   # Allocator: mimalloc instead of emscripten's default dlmalloc. Gecko is extremely
   # allocation-heavy and MOZ_MEMORY (mozjemalloc) is off on wasm, so every alloc hits

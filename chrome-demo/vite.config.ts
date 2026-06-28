@@ -20,7 +20,11 @@ const mime = (n: string) =>
 // set that the old unstripped preload used, plus the Firefox browser/ app dir,
 // in public/chrome-assets.tar.zst. The runtime expands it into OPFS on first load
 // (see src/chrome-fs.ts).
-const GRE_SRC = path.resolve(__dirname, '../obj-full-emscripten/dist/bin');
+// The engine objdir's dist/bin. Defaults to the local debug objdir, but honors
+// $GECKO_OBJDIR so a RELEASE build (CI: obj-full-emscripten-release) can point here.
+const GRE_SRC = process.env.GECKO_OBJDIR
+  ? path.resolve(process.env.GECKO_OBJDIR, 'dist/bin')
+  : path.resolve(__dirname, '../obj-full-emscripten/dist/bin');
 const FONT_SRC = path.resolve(__dirname, '../firefox/toolkit/components/pdfjs/content/web/standard_fonts');
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 const ASSET_ARCHIVE = path.join(PUBLIC_DIR, 'chrome-assets.tar.zst');

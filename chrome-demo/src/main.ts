@@ -136,61 +136,89 @@ for (const [k, v] of new URLSearchParams(location.search)) {
   if (k.startsWith('env.')) optEnv[k.slice(4)] = v;
 }
 
-await prepareChromeFs(setProgress);
-setProgress({ phase: 'ready', percent: 1, message: 'Starting Gecko' });
-console.log('[chrome-demo] chrome assets ready');
+// --- Eager asset prep, explicit-Start engine init -------------------------
+// Chrome assets download + extract into OPFS EAGERLY on page load (driving the
+// progress bar). Only the emscripten/Gecko init is gated behind Start: it spins
+// up the audio AudioWorklet, and the click is the user gesture browsers require
+// before audio (and other gesture-gated APIs) can start.
+const startBtn = document.getElementById('start-btn') as HTMLButtonElement;
 
-// GECKO_CHROME=1 makes the engine use /gre/browser as its APP dir and register
-// the browser chrome package. We still explicitly load browser.xhtml after init;
-// that load is what creates the top-level Firefox chrome window.
-// The chrome assets are installed into OPFS by prepareChromeFs() before this point,
-// so gecko.init() only reads them from local browser storage.
-const gecko = new Gecko({
-  canvas,
-  // Fill the viewport; a debounced window-resize listener keeps it in sync (below).
-  width: window.innerWidth,
-  height: window.innerHeight,
-  assetBase: '/',
-  env: optEnv,
-  // GRE: the extracted tar lives at OPFS `${GRE_OPFS_PATH}`; libxul builds its
-  // built-in OPFS provider over it (consulted provider-first for /gre, baked
-  // gecko.data as fallback). Profile: persistent OPFS at `${PROFILE_OPFS_PATH}`.
-  fs: GRE_OPFS_PATH,
-  profile: PROFILE_OPFS_PATH,
-  // The chrome UI itself boots from local files; loading sites in tabs goes
-  // through the WISP endpoint (defaults to the dev server's /wisp/ proxy).
-  wispUrl: opts.wisp.trim() || undefined,
-  print: (s) => console.log('[gecko]', s),
-  printErr: (s) => console.warn('[gecko]', s),
-});
-
-try {
-  await gecko.init();
-  console.log("init done");
-  setProgress({ phase: 'ready', percent: 1, message: 'Loading browser chrome' });
-  console.log('[chrome-demo] loading browser chrome');
-  await gecko.load(BROWSER_CHROME_URL);
-  console.log('[chrome-demo] Firefox front-end booted');
-  canvas.classList.add('ready');
-  splash.classList.add('done');
-  canvas.focus();
-
-  // Debug/test hook: open a site in a tab from the console (mirrors embed-demo's
-  // window.geckoLoad). The chrome's own address bar is the normal way in.
-  (window as unknown as { geckoLoad: (u: string) => unknown }).geckoLoad = (u) => gecko.load(u);
-
-  // Keep the engine sized to the viewport. The window may have changed during the
-  // (slow) boot, so correct once now, then track resizes with a ~200ms debounce
-  // (resize reflows + recomposites the whole chrome, so coalesce bursts).
-  await gecko.resize(window.innerWidth, window.innerHeight);
-  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-  window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => gecko.resize(window.innerWidth, window.innerHeight), 200);
-  });
-} catch (e) {
+function fail(e: unknown): void {
   console.error('[chrome-demo] startup failed', e);
   status.textContent = e instanceof Error ? e.message : String(e);
   phase.textContent = 'Failed';
   percent.textContent = '';
+  startBtn.disabled = false;
+  startBtn.textContent = 'Retry';
+  startBtn.onclick = () => location.reload();
+}
+
+startBtn.disabled = true;
+startBtn.textContent = 'Preparing…';
+
+// Eager: kicks off at module load, before any click.
+prepareChromeFs(setProgress).then(() => {
+  console.log('[chrome-demo] chrome assets ready');
+  setProgress({ phase: 'ready', percent: 1, message: 'Ready — click Start to launch' });
+  startBtn.disabled = false;
+  startBtn.textContent = 'Start';
+  startBtn.onclick = () => void start();  // engine init only happens on this click
+}).catch(fail);
+
+async function start(): Promise<void> {
+  startBtn.disabled = true;
+  startBtn.textContent = 'Starting…';
+  setProgress({ phase: 'ready', percent: 1, message: 'Starting Gecko' });
+
+  // GECKO_CHROME=1 makes the engine use /gre/browser as its APP dir and register
+  // the browser chrome package. We still explicitly load browser.xhtml after init;
+  // that load is what creates the top-level Firefox chrome window.
+  // The chrome assets are already installed into OPFS (eager prep above), so
+  // gecko.init() only reads them from local browser storage.
+  const gecko = new Gecko({
+    canvas,
+    // Fill the viewport; a debounced window-resize listener keeps it in sync (below).
+    width: window.innerWidth,
+    height: window.innerHeight,
+    assetBase: '/',
+    env: optEnv,
+    // GRE: the extracted tar lives at OPFS `${GRE_OPFS_PATH}`; libxul builds its
+    // built-in OPFS provider over it (consulted provider-first for /gre, baked
+    // gecko.data as fallback). Profile: persistent OPFS at `${PROFILE_OPFS_PATH}`.
+    fs: GRE_OPFS_PATH,
+    profile: PROFILE_OPFS_PATH,
+    // The chrome UI itself boots from local files; loading sites in tabs goes
+    // through the WISP endpoint (defaults to the dev server's /wisp/ proxy).
+    wispUrl: opts.wisp.trim() || undefined,
+    print: (s) => console.log('[gecko]', s),
+    printErr: (s) => console.warn('[gecko]', s),
+  });
+
+  try {
+    await gecko.init();
+    console.log("init done");
+    setProgress({ phase: 'ready', percent: 1, message: 'Loading browser chrome' });
+    console.log('[chrome-demo] loading browser chrome');
+    await gecko.load(BROWSER_CHROME_URL);
+    console.log('[chrome-demo] Firefox front-end booted');
+    canvas.classList.add('ready');
+    splash.classList.add('done');
+    canvas.focus();
+
+    // Debug/test hook: open a site in a tab from the console (mirrors embed-demo's
+    // window.geckoLoad). The chrome's own address bar is the normal way in.
+    (window as unknown as { geckoLoad: (u: string) => unknown }).geckoLoad = (u) => gecko.load(u);
+
+    // Keep the engine sized to the viewport. The window may have changed during the
+    // (slow) boot, so correct once now, then track resizes with a ~200ms debounce
+    // (resize reflows + recomposites the whole chrome, so coalesce bursts).
+    await gecko.resize(window.innerWidth, window.innerHeight);
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => gecko.resize(window.innerWidth, window.innerHeight), 200);
+    });
+  } catch (e) {
+    fail(e);
+  }
 }

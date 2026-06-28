@@ -275,6 +275,13 @@ export class Gecko {
         m.ENV['GRE_DIR'] = greOpfsPath ? opfsAbs(greOpfsPath) : greProv ? '/gre' : '/gre-baked';
         if (profOpfsPath) m.ENV['PROFILE_DIR'] = opfsAbs(profOpfsPath);
         m.ENV['MOZ_FORCE_DISABLE_E10S'] = '1';
+        // Default the chrome theme + content prefers-color-scheme to the HOST
+        // browser's color scheme: read window.matchMedia here (runs on the page
+        // thread, where it exists) and pass it to xul_init via GECKO_DARK ->
+        // ui.systemUsesDarkTheme. Set BEFORE the opts.env merge so an explicit
+        // env override still wins. (matchMedia is absent off the main thread; default light.)
+        const hostMatchMedia = (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia;
+        m.ENV['GECKO_DARK'] = hostMatchMedia && hostMatchMedia('(prefers-color-scheme: dark)').matches ? '1' : '0';
         for (const [k, v] of Object.entries(this.opts.env ?? {})) m.ENV[k] = v;
         // The WISP transport (build/wisp-net.js, a --js-library) reads the
         // endpoint from Module.wispUrl and lazily opens the single WebSocket on
@@ -470,6 +477,11 @@ export class Gecko {
       this.blitDst32 = new Uint32Array(this.blitImg.data.buffer);
     }
     const n = len >>> 2;
+    // The engine pthread may have grown the shared heap after we read resPtr/len;
+    // this thread's HEAPU8 view can lag, so a [resPtr, resPtr+len) view would run
+    // past the buffer -> "Invalid typed array length" RangeError (crashes pump).
+    // Skip this frame; the next blit (after the view catches up) paints it.
+    if ((resPtr & 3) || resPtr + len > u8.buffer.byteLength) return 0;
     const src32 = new Uint32Array(u8.buffer, resPtr, n);
     const dst = this.blitDst32!;
     let nonWhite = 0;
@@ -497,8 +509,13 @@ export class Gecko {
       this.popupImg = octx.createImageData(this.W, this.H);
       this.popupDst32 = new Uint32Array(this.popupImg.data.buffer);
     }
+    const buf = this.mod!.HEAPU8.buffer;
     const n = len >>> 2;
-    const src32 = new Uint32Array(this.mod!.HEAPU8.buffer, resPtr, n);
+    // See blit(): guard against the shared heap growing under us (this thread's view
+    // lagging) or a bad/misaligned ptr -- otherwise the view overruns the buffer and
+    // throws "Invalid typed array length", crashing the pump. Skip this frame.
+    if ((resPtr & 3) || resPtr + len > buf.byteLength) return;
+    const src32 = new Uint32Array(buf, resPtr, n);
     const dst = this.popupDst32!;
     // BGRA -> RGBA, PRESERVING source alpha (unlike blit(), which forces opaque).
     for (let i = 0; i < n; i++) {

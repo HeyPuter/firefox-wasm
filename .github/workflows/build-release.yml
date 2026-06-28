@@ -63,7 +63,7 @@ jobs:
           # mozconfig's HOST_CC/HOST_CXX (host-side codegen tools) -- their version
           # is irrelevant. The bindgen libclang is installed separately below.
           sudo apt-get install -y --no-install-recommends \
-            clang llvm-dev libpulse-dev python3 mercurial unzip zstd \
+            clang llvm-dev libpulse-dev python3 mercurial unzip zstd rsync \
             wget lsb-release gnupg software-properties-common
           # bindgen (gecko-profiler + other rust crates) parses emscripten 6.0.1's
           # libc++ headers, which are LLVM 23 and use clang>=19 builtins: __is_convertible
@@ -187,9 +187,34 @@ jobs:
           path: gecko.js-*.tar.gz
           if-no-files-found: error
 
+      # Build the chrome-demo as a static Vite site (the full Firefox front-end demo).
+      # Runs AFTER the gecko.js artifact upload so that primary artifact is published
+      # even if the demo build trips. The demo's vite config stages the GRE resource set
+      # from the engine objdir via rsync into public/chrome-assets.tar.zst and emits the
+      # served gecko.wasm[.zst]; GECKO_OBJDIR points it at the RELEASE objdir (its default
+      # is the local debug objdir). gecko.js (workspace dep) + node_modules already exist
+      # from `make libxul` above. NOTE: chrome-demo/dist is a static site that still must
+      # be served cross-origin-isolated (COOP/COEP) WITH a WISP proxy at /wisp (the demo's
+      # dev/preview server provides both; a plain static host does not).
+      - name: Build the chrome-demo (static Vite build)
+        run: |
+          export GECKO_OBJDIR="${{ github.workspace }}/obj-full-emscripten-release"
+          pnpm --filter chrome-demo build
+          tar -C chrome-demo -czf chrome-demo-${{ github.ref_name }}.tar.gz dist
+          ls -la chrome-demo-*.tar.gz
+
+      - name: Upload chrome-demo artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-demo-${{ github.ref_name }}
+          path: chrome-demo-*.tar.gz
+          if-no-files-found: error
+
       - name: Publish GitHub Release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: gecko.js-*.tar.gz
+          files: |
+            gecko.js-*.tar.gz
+            chrome-demo-*.tar.gz
           generate_release_notes: true

@@ -387,6 +387,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // PaintAndRequestComposite.)
     mozilla::Preferences::SetBool("layout.testing.top-level-always-active", true);
 
+    // Follow the HOST browser's prefers-color-scheme. The loader's preRun reads
+    // window.matchMedia('(prefers-color-scheme: dark)') and passes it as GECKO_DARK;
+    // setting ui.systemUsesDarkTheme overrides LookAndFeel::NativeGetInt
+    // (nsXPLookAndFeel::GetIntValue checks this pref first), so BOTH the default
+    // chrome theme and content prefers-color-scheme track the host. Unset => the
+    // native headless default (light). (Initial detection only; a host scheme flip
+    // mid-session would need the loader to re-push the pref.)
+    if (const char* d = getenv("GECKO_DARK")) {
+      mozilla::Preferences::SetInt("ui.systemUsesDarkTheme", atoi(d) ? 1 : 0);
+      printf("xul_init: ui.systemUsesDarkTheme=%d (from host prefers-color-scheme)\n",
+             atoi(d) ? 1 : 0);
+    }
+
     // GPU compositing (GECKO_GPU=1 / index.html?gpu=1): force in-process hardware
     // WebRender presenting to the page <canvas> via WebGL2 (GLContextProviderEmscripten).
     // Set here so it is REPRODUCIBLE -- these were previously hand-added to the staged

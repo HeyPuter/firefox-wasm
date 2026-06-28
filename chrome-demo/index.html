@@ -111,6 +111,19 @@
       color: #7d8794;
       font-size: 11px;
     }
+    .splash-actions { margin-top: 18px; }
+    .start-btn {
+      appearance: none;
+      border: 1px solid #6bd1ff;
+      background: #1d4658;
+      color: #eaf7ff;
+      font: 650 15px/1 system-ui, -apple-system, sans-serif;
+      padding: 12px 30px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .start-btn:hover { background: #235974; }
+    .start-btn:disabled { opacity: 0.55; cursor: default; }
   </style>
 </head>
 <body>
@@ -130,6 +143,9 @@
         <label><input type="checkbox" id="opt-jit" /> Enable JIT</label>
         <label class="wisp-field">WISP server <input type="text" id="opt-wisp" spellcheck="false" autocomplete="off" /></label>
         <p class="hint">Changing an option reloads the page to apply it.</p>
+      </div>
+      <div class="splash-actions">
+        <button id="start-btn" type="button" class="start-btn">Start</button>
       </div>
       <div id="console-output" class="console-box" role="log" aria-label="Startup console output"></div>
     </div>
