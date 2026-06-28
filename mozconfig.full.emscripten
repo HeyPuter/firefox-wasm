@@ -32,16 +32,16 @@ ac_add_options --disable-shared-memory
 ac_add_options --disable-tests
 ac_add_options --disable-debug
 ac_add_options --enable-optimize
-# Release (GECKO_RELEASE=1, set by `make release` / `make ... RELEASE=1`):
-# link-time-optimize the engine. Toggling this reconfigures + rebuilds libxul.
-# Use ThinLTO (not full/monolithic LTO): full LTO merges the whole program into one
-# module and the libxul link spikes past available RAM -> OOM-killed. ThinLTO does
-# cross-module opt via per-module summaries for a ~couple-% optimization cost. NOTE:
-# ThinLTO alone wasn't enough -- its backend runs one codegen job per core, and 8
-# parallel jobs over the 3.4GB libxul still OOM-killed the link on the CI runner
-# (8 cores / 31 GiB). The --thinlto-jobs cap in LDFLAGS below is what actually bounds
-# the link's peak memory.
-if [ "${GECKO_RELEASE:-}" = "1" ]; then
+# Engine LTO is OPT-IN (GECKO_LTO=1) and deliberately NOT implied by RELEASE. The
+# libxul LTO link needs >54 GiB under emscripten 6.0.1 and OOM-kills the standard CI
+# runner (8 cores / 31 GiB) even as ThinLTO with a --thinlto-jobs cap AND 23 GiB swap
+# -- the peak is the single-process whole-program combine, which job caps can't bound.
+# So default RELEASE builds skip engine LTO and take the proven non-LTO link path (the
+# libxul `-shared` link quickly SIGSEGVs in wasm-ld -> relink-engine-r.sh relinks `-r`),
+# relying on wasm-opt -O3 (binaryen) for wasm-level optimization instead. Set GECKO_LTO=1
+# (e.g. `make ... LTO=1`) ONLY on a big-RAM host (~64 GiB+) to get cross-module LTO back.
+# Toggling the env var needs an explicit `make configure`; editing this file reconfigures.
+if [ "${GECKO_LTO:-}" = "1" ]; then
   ac_add_options --enable-lto=thin
 fi
 ac_add_options --disable-crashreporter
@@ -67,13 +67,12 @@ ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOM
 export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
 export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
 export LDFLAGS="-pthread"
-# Cap ThinLTO backend parallelism in release builds. lld defaults to one codegen job
-# per core; on the CI runner (8 cores / 31 GiB) eight parallel backend jobs over the
-# 3.4GB libxul blew past RAM and the link was OOM-killed (SIGTERM / exit 143). Two
-# jobs keeps aggregate peak memory well under the ceiling -- slower link, IDENTICAL
-# output (job count affects only parallelism, not codegen). Bump if the runner has
-# more RAM headroom.
-if [ "${GECKO_RELEASE:-}" = "1" ]; then
+# When LTO is opted in (GECKO_LTO=1), cap ThinLTO backend parallelism: lld defaults to
+# one codegen job per core, and parallel jobs over the 3.4GB libxul multiply peak RAM.
+# (This bounds parallelism only; it does NOT fix the single-process combine peak, which
+# is why LTO still needs a big-RAM host -- see the --enable-lto note above. Bump the job
+# count if the host has RAM headroom.)
+if [ "${GECKO_LTO:-}" = "1" ]; then
   export LDFLAGS="$LDFLAGS -Wl,--thinlto-jobs=2"
 fi
 

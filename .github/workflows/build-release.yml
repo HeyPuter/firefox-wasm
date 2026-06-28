@@ -10,14 +10,18 @@ name: build-and-release
 # a ~245 MB gecko.wasm, and 25-50 min on 12 cores. On a standard hosted runner
 # (4 vCPU / 16 GB RAM / ~14 GB free disk) this is marginal on ALL THREE axes:
 #   - disk: we free ~30 GB below; still tight. Prefer a larger/self-hosted runner.
-#   - ram:  the final emcc relink (wasm-opt over the 245 MB module) + engine LTO link
-#           spike past 16 GB and OOM-kill, so we add a 32 GB swapfile on /mnt below.
+#   - ram:  the final emcc relink (wasm-opt over the 245 MB module) spikes hard, so we
+#           add a best-effort swapfile below. Engine LTO is OFF by default: the libxul
+#           LTO link needs >54 GiB (it OOM-killed an 8-core/31 GiB runner even with
+#           ThinLTO + a --thinlto-jobs cap + 23 GiB swap). Re-enable only on a ~64 GiB+
+#           host with `make ... LTO=1` (see mozconfig + Makefile LTO knob).
 #   - time: on 4 vCPU expect ~2-4 h (job cap is 6 h).
 # If it doesn't fit, switch `runs-on` to a larger runner (e.g. a self-hosted one
 # or GitHub larger runners) — the steps are otherwise unchanged.
 #
 # This workflow is a STARTING POINT; the local upgrade to emscripten 6.0.1 was
-# verified with a DEBUG build (the RELEASE/LTO path here is not yet CI-verified).
+# verified with a DEBUG build. The RELEASE path here runs optimized + wasm-opt but
+# WITHOUT engine LTO (LTO doesn't fit this runner — see above).
 
 on:
   push:
@@ -117,11 +121,11 @@ jobs:
       - name: Clone the pinned Gecko engine fork (depth 1)
         run: make firefox
 
-      # Safety net for the libxul LTO link: the runner is 8 cores / ~31 GiB and the
-      # link peaks hard. The --thinlto-jobs cap (mozconfig) is the primary memory fix;
-      # this adds swap so a peak above RAM spills instead of getting OOM-killed
-      # (SIGTERM / exit 143). Fully best-effort -- never fails the job (a runner may
-      # already have swap, lack disk for it, or forbid swapon).
+      # Memory headroom safety net. Engine LTO is OFF by default (it needs >54 GiB and
+      # OOM-killed this 8-core/~31 GiB runner), so the big remaining spike is wasm-opt
+      # -O3 over the ~250 MB module at the final relink. Adding swap lets a peak above
+      # RAM spill instead of getting OOM-killed (SIGTERM / exit 143). Fully best-effort
+      # -- never fails the job (a runner may already have swap, lack disk, or forbid swapon).
       - name: Add swap headroom (best-effort)
         run: |
           if swapon --show 2>/dev/null | grep -q .; then
@@ -136,7 +140,7 @@ jobs:
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
-      - name: "Build the engine + gecko.js (release: LTO + zstd + wasm-opt) — long"
+      - name: "Build the engine + gecko.js (release: zstd + wasm-opt, no engine LTO) — long"
         run: |
           # wasm-opt's recursive passes overflow the default 8MB stack on the
           # ~250MB module and die with SIGSEGV. Raise the stack limit for the whole
@@ -145,6 +149,8 @@ jobs:
           # on the `-shared` link, so `make build` relinks the engine libs as `-r`
           # relocatable objects (gecko.js/build/relink-engine-r.sh, run between two
           # `mach build` passes) -- handled inside `make`, no extra step here.
+          # Engine LTO is intentionally OFF (LTO=1 would need a ~64 GiB+ runner; this one
+          # OOM-kills the LTO link). RELEASE still gives -O3 + wasm-opt over the module.
           ulimit -s unlimited || ulimit -s 524288 || true
           make libxul RELEASE=1   # firefox cloned; vendor -> mach build (+relink) -> build-lib.sh -> rspack
 

@@ -37,11 +37,18 @@ WISP_PATCH_SRC := gecko.js/build/patch-emsdk-wasmfs.mjs gecko.js/build/emsdk-pat
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
 MOZBUILD_STATE_PATH ?= $(HOME)/.mozbuild
-# RELEASE=1 turns on optimizations: --enable-lto for the engine (mozconfig) and
-# -O3 at the emcc relink so wasm-opt's passes run over the final module.
+# RELEASE=1 turns on optimizations: -O3 at the emcc relink so wasm-opt's passes run
+# over the final module (and -O3 engine codegen). NOTE: RELEASE does NOT enable engine
+# LTO -- that's the separate LTO knob below.
 RELEASE             ?=
+# LTO=1 enables cross-module ThinLTO for the engine (mozconfig reads GECKO_LTO). It is
+# independent of RELEASE because the libxul LTO link needs a big-RAM host (>54 GiB) --
+# the standard CI runner OOM-kills it. Only set LTO=1 on a ~64 GiB+ machine. Off by
+# default so RELEASE builds are reliable (optimized + wasm-opt, just no engine LTO).
+LTO                 ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH EMSDK
 export GECKO_RELEASE := $(RELEASE)
+export GECKO_LTO := $(LTO)
 
 # Engine build output (RELEASE uses its own objdir, matching the mozconfig + the
 # gecko.js build script). `libxul` keys off this existing to decide whether a first
