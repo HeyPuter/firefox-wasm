@@ -117,6 +117,22 @@ jobs:
       - name: Clone the pinned Gecko engine fork (depth 1)
         run: make firefox
 
+      # Safety net for the libxul LTO link: the runner is 8 cores / ~31 GiB and the
+      # link peaks hard. The --thinlto-jobs cap (mozconfig) is the primary memory fix;
+      # this adds swap so a peak above RAM spills instead of getting OOM-killed
+      # (SIGTERM / exit 143). Fully best-effort -- never fails the job (a runner may
+      # already have swap, lack disk for it, or forbid swapon).
+      - name: Add swap headroom (best-effort)
+        run: |
+          if swapon --show 2>/dev/null | grep -q .; then
+            echo ">> swap already present:"; swapon --show; free -h; exit 0
+          fi
+          SW=/swapfile
+          ( sudo fallocate -l 24G "$SW" || sudo dd if=/dev/zero of="$SW" bs=1M count=24576 ) 2>/dev/null \
+            && sudo chmod 600 "$SW" && sudo mkswap "$SW" >/dev/null 2>&1 && sudo swapon "$SW" 2>/dev/null \
+            && echo ">> added 24G swap at $SW" || echo "!! could not add swap (continuing without it)"
+          free -h || true
+
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
