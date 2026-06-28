@@ -24,7 +24,10 @@ fi
 EMXX="${EMSDK:+$EMSDK/upstream/emscripten/}em++"
 mkdir -p "$PKG/wasm"
 
-if [ "${GECKO_RELEASE:-}" = "1" ]; then EMBED_OPT=(-O3); LINK_OPT=-O3; else EMBED_OPT=(-O0 -g0); LINK_OPT=-O0; fi
+# Embedder C++ codegen is -O3 in release. The emcc LINK stays at -O0 even in release
+# so emcc does NOT run its own wasm-opt -- the manual wasm-opt step after the link
+# (release only, below) is the SINGLE optimization pass, using $GECKO_WASMOPT_FLAGS.
+if [ "${GECKO_RELEASE:-}" = "1" ]; then EMBED_OPT=(-O3); LINK_OPT=-O0; else EMBED_OPT=(-O0 -g0); LINK_OPT=-O0; fi
 [ "${NO_WASM_OPT:-}" = "1" ] && LINK_OPT=-O0
 
 # 1. stage the engine libs (unstripped; the final link's --strip-debug strips the
@@ -122,6 +125,21 @@ rc=$?
 echo ">> link rc=$rc"
 ls -la "$PKG"/wasm/gecko.js "$PKG"/wasm/gecko.wasm "$PKG"/wasm/gecko.data "$PKG"/wasm/gecko.worker.js 2>/dev/null | awk '{print $5,$9}'
 [ "$rc" = 0 ] || { echo "=== link.err tail ==="; tail -25 "$HERE/link.err"; exit "$rc"; }
+
+# Release: the SINGLE wasm-opt pass over the linked module (emcc's own wasm-opt is
+# off -- LINK_OPT=-O0 above). These flags can't be routed through em++ (it rejects
+# -O4), so wasm-opt is invoked directly on gecko.wasm. -all enables all wasm features
+# so it accepts the module regardless of the target_features section. Override the flag
+# string with $GECKO_WASMOPT_FLAGS; set NO_WASM_OPT=1 to skip optimization entirely.
+if [ "${GECKO_RELEASE:-}" = "1" ] && [ "${NO_WASM_OPT:-}" != "1" ]; then
+  WASMOPT="${EMSDK:+$EMSDK/upstream/bin/}wasm-opt"
+  WASMOPT_FLAGS="${GECKO_WASMOPT_FLAGS:--all -O4 -O4 -O4 -O4 -O4 -O4}"
+  echo ">> wasm-opt $WASMOPT_FLAGS  (release, on gecko.wasm)"
+  # shellcheck disable=SC2086 -- intentional word-splitting of the flag string
+  "$WASMOPT" $WASMOPT_FLAGS "$PKG/wasm/gecko.wasm" -o "$PKG/wasm/gecko.wasm.opt" \
+    && mv -f "$PKG/wasm/gecko.wasm.opt" "$PKG/wasm/gecko.wasm" \
+    || { echo "!! wasm-opt failed"; rm -f "$PKG/wasm/gecko.wasm.opt"; exit 1; }
+fi
 
 # emscripten regenerates gecko.js on every link; re-apply the WebRender shader
 # fix (hoist `out` varyings declared after main() so host WebGL -- e.g. Firefox,
