@@ -49,6 +49,15 @@ LTO                 ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH EMSDK
 export GECKO_RELEASE := $(RELEASE)
 export GECKO_LTO := $(LTO)
+# Pin the build timestamp for the whole build. The `build` target runs `mach build` TWICE
+# with the libxul `-r` relink in between (see that recipe). mach regenerates buildid.cpp
+# from the current time on each pass; a changed build id recompiles buildid.o (linked into
+# libxul) and makes the relinked libxul.so look stale -- so the second pass re-links libxul
+# as `-shared` and hits the wasm-ld SIGSEGV again, failing the build. A fixed MOZ_BUILD_DATE
+# (14 digits, YYYYMMDDHHMMSS -- mach ignores any other length) keeps the build id identical
+# across both passes, so pass 2 sees libxul.so up to date and skips the link. Evaluated
+# once at make startup, so both passes inherit the same value.
+export MOZ_BUILD_DATE := $(shell date +%Y%m%d%H%M%S)
 
 # Engine build output (RELEASE uses its own objdir, matching the mozconfig + the
 # gecko.js build script). `libxul` keys off this existing to decide whether a first
