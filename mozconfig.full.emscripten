@@ -57,8 +57,11 @@ ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOM
 # missing FT_Done_MM_Var / variable fonts / COLRv1). tree_freetype is enabled
 # for EMSCRIPTEN in toolkit/moz.configure; expose the headers globally so every
 # dir resolves <ft2build.h> to the in-tree copy, and link the in-tree lib.
-export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
-export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
+# -msimd128: ENABLE_WASM_SIMD is auto-on for wasm32; the in-process wasm interpreter
+# executes v128 ops (needs wasm_simd128.h intrinsics) and emscripten requires it to
+# accept the -msse2 mozglue SIMD.cpp paths. Scalar interp TU opts out (-mno-simd128).
+export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread -msimd128"
+export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread -msimd128"
 export LDFLAGS="-pthread"
 
 # Cache compiles with sccache WHEN AVAILABLE (verified to cache emcc + host clang).

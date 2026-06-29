@@ -25,6 +25,13 @@ ac_add_options --disable-clang-plugin
 ac_add_options --disable-debug-symbols
 ac_add_options --enable-optimize
 
+# wasm SIMD: ENABLE_WASM_SIMD is auto-on for wasm32 (the in-process wasm interpreter
+# executes v128 ops), so the interp TUs need the wasm_simd128.h intrinsics, and
+# emscripten requires -msimd128 to accept the -msse2 mozglue SIMD.cpp paths. The
+# scalar interp TU opts back out via -mno-simd128 (js/src/wasm/moz.build).
+export CFLAGS="-msimd128"
+export CXXFLAGS="-msimd128"
+
 # Target compiler = emscripten; host tools = native clang.
 CC=emcc
 CXX=em++
