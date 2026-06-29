@@ -4,7 +4,7 @@
 # emscripten 6.0.1's wasm-ld (1) SIGSEGVs in the ElemSection writer on the `-shared`
 # link of the huge libxul, and (2) treats `-shared` wasm libs as runtime-fetched
 # dynamic side modules rather than static inputs. This project statically links all
-# engine libs into ONE wasm module (gecko.js/build/build-lib.sh), so they must be
+# engine libs into ONE wasm module (gecko.js/build-lib.sh), so they must be
 # plain relocatable objects. (emscripten 3.1.56's older lld tolerated the `-shared`
 # path and static-linked them; 6.0.x does not.)
 #
@@ -18,8 +18,8 @@
 # link; this produces the relocatable libxul.so so a second `mach build` can skip the
 # link and finish the resource/chrome tiers). See the Makefile `build` target.
 set -uo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js/build
-ROOT="$(cd "$HERE/../.." && pwd)"              # repo root
+HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js (package root)
+ROOT="$(cd "$HERE/.." && pwd)"                 # repo root
 OBJ="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
 DISTBIN="$OBJ/dist/bin"

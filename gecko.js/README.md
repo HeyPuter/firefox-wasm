@@ -45,7 +45,7 @@ that serves the Firefox front-end so the full browser UI boots (`GECKO_CHROME=1`
 
 ## Building
 
-`gecko.*` is produced by `build/build-lib.sh` (stages the engine libs + a minimal
+`gecko.*` is produced by `build-lib.sh` (stages the engine libs + a minimal
 GRE, then emcc-links), and `dist/` by rspack (`rspack.config.js`). Both run via:
 
 ```

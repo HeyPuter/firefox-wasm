@@ -1,6 +1,6 @@
-// Bundles the TypeScript library (src/index.ts) into an ESM dist/gecko.js and
+// Bundles the TypeScript library (js/index.ts) into an ESM dist/gecko.js and
 // ships the emscripten engine artifacts (gecko.mjs/.wasm/.data/.worker.js, built
-// by build/build-lib.sh into wasm/) alongside it.
+// by build-lib.sh into wasm/) alongside it.
 //
 // gecko.js (the emscripten glue) and gecko.worker.js (the pthread worker) are
 // INLINED into the bundle as source strings (imported with `?source` ->
@@ -17,7 +17,7 @@ const wasm = (f) => path.resolve(here, 'wasm', f);
 export default {
   target: 'web',
   mode: 'production',
-  entry: './src/index.ts',
+  entry: './js/index.ts',
   experiments: { outputModule: true },
   output: {
     path: path.resolve(here, 'dist'),

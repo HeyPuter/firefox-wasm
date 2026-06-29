@@ -4,9 +4,12 @@
 # Classic emscripten MODULARIZE (createGecko) so the ESM library loads it via
 # script injection.
 set -uo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js/build
-PKG="$(cd "$HERE/.." && pwd)"                  # gecko.js
+HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js (package root)
+PKG="$HERE"                                    # gecko.js
 ROOT="$(cd "$PKG/.." && pwd)"                  # repo root
+SRC="$HERE/src"                                # C++ embedder sources (embed-*.cpp)
+BUILD="$HERE/build"                            # generated artifacts (.o, staged libs, gre-stage, link.err)
+mkdir -p "$BUILD"
 OBJ="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
 INC="$OBJ/dist/include"
@@ -35,9 +38,9 @@ if [ "${GECKO_RELEASE:-}" = "1" ]; then EMBED_OPT=(-O3); LINK_OPT=-O0; else EMBE
 echo ">> staging engine libs from $DISTBIN"
 for lib in libxul libnss3 libgkcodecs; do
   [ -e "$DISTBIN/$lib.so" ] || { echo "!! missing $DISTBIN/$lib.so -- run 'make build' first"; exit 1; }
-  cp "$DISTBIN/$lib.so" "$HERE/$lib.stripped.so"
+  cp "$DISTBIN/$lib.so" "$BUILD/$lib.stripped.so"
 done
-ln -sf libxul.stripped.so "$HERE/libxul.o"
+ln -sf libxul.stripped.so "$BUILD/libxul.o"
 
 # 2. stage the minimal GRE -> build/gre-stage
 bash "$HERE/stage-gre-min.sh" || exit 1
@@ -52,8 +55,8 @@ CXXFLAGS=(
 echo ">> compiling embedder (embed-*.cpp)"
 EMBED_OBJS=()
 for src in embed-xul embed-init embed-browser embed-paint embed-input embed-mirror; do
-  "$EMXX" "${CXXFLAGS[@]}" -c "$HERE/$src.cpp" -o "$HERE/$src.o" || exit 1
-  EMBED_OBJS+=( "$HERE/$src.o" )
+  "$EMXX" "${CXXFLAGS[@]}" -c "$SRC/$src.cpp" -o "$BUILD/$src.o" || exit 1
+  EMBED_OBJS+=( "$BUILD/$src.o" )
 done
 
 # mozglue/memory/mfbt/fmt are MOZ_GLUE_IN_PROGRAM: linked into the program, not libxul.
@@ -61,7 +64,7 @@ LOOSE=()
 for d in mfbt mozglue/misc mozglue/baseprofiler mozglue/build memory/build memory/mozalloc third_party/fmt; do
   for f in "$OBJ/$d"/*.o; do [ -e "$f" ] && LOOSE+=("$f"); done
 done
-EXTRA=( "$HERE/libnss3.stripped.so" "$HERE/libgkcodecs.stripped.so" )
+EXTRA=( "$BUILD/libnss3.stripped.so" "$BUILD/libgkcodecs.stripped.so" )
 
 EMSETTINGS=(
   "$LINK_OPT" --profiling-funcs
@@ -109,7 +112,7 @@ EMSETTINGS=(
   -sOFFSCREEN_FRAMEBUFFER=1 -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1 -sGL_ENABLE_GET_PROC_ADDRESS=1
   -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=#gldummy
   -sENVIRONMENT=web,worker
-  --preload-file "$HERE/gre-stage@/gre-baked"
+  --preload-file "$BUILD/gre-stage@/gre-baked"
 )
 if [ "${DEBUG:-0}" = "1" ]; then
   EMSETTINGS+=( -g -gseparate-dwarf="$PKG/wasm/gecko.debug.wasm" )
@@ -119,12 +122,12 @@ fi
 
 ulimit -s unlimited 2>/dev/null || ulimit -s 524288 2>/dev/null || true
 echo ">> linking embed-xul + libxul + glue -> $OUT (slow)"
-"$EMXX" "${EMBED_OBJS[@]}" "$HERE/libxul.o" "${LOOSE[@]}" "${EXTRA[@]}" \
-  "${EMSETTINGS[@]}" -o "$OUT" 2> "$HERE/link.err"
+"$EMXX" "${EMBED_OBJS[@]}" "$BUILD/libxul.o" "${LOOSE[@]}" "${EXTRA[@]}" \
+  "${EMSETTINGS[@]}" -o "$OUT" 2> "$BUILD/link.err"
 rc=$?
 echo ">> link rc=$rc"
 ls -la "$PKG"/wasm/gecko.js "$PKG"/wasm/gecko.wasm "$PKG"/wasm/gecko.data "$PKG"/wasm/gecko.worker.js 2>/dev/null | awk '{print $5,$9}'
-[ "$rc" = 0 ] || { echo "=== link.err tail ==="; tail -25 "$HERE/link.err"; exit "$rc"; }
+[ "$rc" = 0 ] || { echo "=== link.err tail ==="; tail -25 "$BUILD/link.err"; exit "$rc"; }
 
 # Release: the SINGLE wasm-opt pass over the linked module (emcc's own wasm-opt is
 # off -- LINK_OPT=-O0 above). These flags can't be routed through em++ (it rejects

@@ -19,7 +19,7 @@
     "wasm"
   ],
   "scripts": {
-    "build:engine": "bash build/build-lib.sh",
+    "build:engine": "bash build-lib.sh",
     "build:bundle": "rspack build",
     "build:types": "tsc",
     "build": "pnpm run build:engine && pnpm run build:bundle && pnpm run build:types",

@@ -8,10 +8,10 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "js",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src"]
+  "include": ["js"]
 }

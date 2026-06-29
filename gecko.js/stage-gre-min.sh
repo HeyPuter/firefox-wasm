@@ -35,12 +35,12 @@
 # chrome/toolkit/skin/classic [video/form widget skins] are load-bearing / risky and
 # KEPT.) Net: gecko.data 38M -> ~8M.
 set -euo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js/build
-ROOT="$(cd "$HERE/../.." && pwd)"              # repo root
+HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js (package root)
+ROOT="$(cd "$HERE/.." && pwd)"                 # repo root
 OBJ="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
 SRC="$OBJ/dist/bin"
-DST="$HERE/gre-stage"
+DST="$HERE/build/gre-stage"                    # generated artifact, lives under build/
 
 rm -rf "$DST"; mkdir -p "$DST"
 # Pin bumps leave dangling symlinks in dist/bin; rsync -L aborts on them.

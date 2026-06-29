@@ -147,7 +147,7 @@ jobs:
           # make -> mach -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
           # Also needed for the libxul.so relink: emscripten 6.0.1's wasm-ld SIGSEGVs
           # on the `-shared` link, so `make build` relinks the engine libs as `-r`
-          # relocatable objects (gecko.js/build/relink-engine-r.sh, run between two
+          # relocatable objects (gecko.js/relink-engine-r.sh, run between two
           # `mach build` passes) -- handled inside `make`, no extra step here.
           # Engine LTO is intentionally OFF (LTO=1 would need a ~64 GiB+ runner; this one
           # OOM-kills the LTO link). RELEASE still gives -O3 + wasm-opt over the module.

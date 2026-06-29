@@ -32,7 +32,7 @@ FIREFOX_REF := e874c4dd3a028d8ba7496310208187f43d7e8d18
 EMSDK          ?= $(ROOT)/emsdk
 EMSDK_VERSION  ?= 6.0.1
 EMSDK_STAMP    := $(EMSDK)/.wisp-patched
-WISP_PATCH_SRC := gecko.js/build/patch-emsdk-wasmfs.mjs gecko.js/build/emsdk-patches/wisp_socket.h
+WISP_PATCH_SRC := gecko.js/patch-emsdk-wasmfs.mjs gecko.js/emsdk-patches/wisp_socket.h
 
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
@@ -91,7 +91,7 @@ $(EMSDK_STAMP): $(WISP_PATCH_SRC)
 	  git clone https://github.com/emscripten-core/emsdk.git "$(EMSDK)"; \
 	fi
 	cd "$(EMSDK)" && ./emsdk install $(EMSDK_VERSION) && ./emsdk activate $(EMSDK_VERSION)
-	node gecko.js/build/patch-emsdk-wasmfs.mjs
+	node gecko.js/patch-emsdk-wasmfs.mjs
 	@touch "$@"
 
 # Optimized build (engine LTO + wasm-opt). NOTE: toggling RELEASE changes the
@@ -135,7 +135,7 @@ build: firefox vendor $(EMSDK_STAMP)
 	@# finishes the resource/chrome tiers. (|| true masks only the expected link failure;
 	@# any real error resurfaces in the second build.)
 	cd firefox && ./mach build || true
-	bash gecko.js/build/relink-engine-r.sh
+	bash gecko.js/relink-engine-r.sh
 	cd firefox && ./mach build
 
 # Force a reconfigure. Needed when you change something configure inspects that

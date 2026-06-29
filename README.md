@@ -33,8 +33,8 @@ demos. (The old `embed-xul/` + `embed-chrome/` stub dirs have been removed.)
 
 | script | does |
 |---|---|
-| `make build` | configure + compile the whole engine → `obj-full-emscripten/dist/bin/libxul.so`, then relink libxul/libnss3/libgkcodecs as `-r` relocatable objects (`gecko.js/build/relink-engine-r.sh`; an emscripten 6.0.1 wasm-ld `-shared` workaround, run between two `mach build` passes). |
-| `make libxul` (default `make`) | build the engine (if needed) then the gecko.js package: stage a MINIMAL GRE + emcc-link `gecko.js/build/embed-xul.cpp` + `libxul` → `gecko.js/wasm/gecko.{js,wasm,data,worker.js}`, then the rspack ESM bundle → `gecko.js/dist/`. |
+| `make build` | configure + compile the whole engine → `obj-full-emscripten/dist/bin/libxul.so`, then relink libxul/libnss3/libgkcodecs as `-r` relocatable objects (`gecko.js/relink-engine-r.sh`; an emscripten 6.0.1 wasm-ld `-shared` workaround, run between two `mach build` passes). |
+| `make libxul` (default `make`) | build the engine (if needed) then the gecko.js package: stage a MINIMAL GRE + emcc-link `gecko.js/src/embed-xul.cpp` + `libxul` → `gecko.js/wasm/gecko.{js,wasm,data,worker.js}`, then the rspack ESM bundle → `gecko.js/dist/`. |
 | `make embed-demo` / `make chrome-demo` | build the library, then run its Vite demo (serves with COOP/COEP — required for `SharedArrayBuffer` / cross-origin isolation — and a WISP proxy at `/wisp/`). `make run` is an alias for `embed-demo`. |
 
 Everything below is **NOT** done by those scripts — it's environment/toolchain
@@ -107,7 +107,7 @@ make build      # rebuild just the engine (e.g. after editing firefox/ sources),
 make configure  # force a reconfigure (after a mozconfig / moz.build / moz.configure change)
 ```
 
-`make build` runs `mach build` twice with `gecko.js/build/relink-engine-r.sh` in
+`make build` runs `mach build` twice with `gecko.js/relink-engine-r.sh` in
 between: emscripten 6.0.1's wasm-ld SIGSEGVs on the `-shared` libxul link, so the
 engine libs are relinked as `-r` relocatable objects (which the embedder
 static-links into one module) and a second `mach build` finishes the resource tiers.
