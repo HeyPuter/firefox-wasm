@@ -1,8 +1,9 @@
-// ubo-bench driver for the embed harness. Paths relative to the firefox-wasm root (cwd):
-//   node embed-js/run.cjs embed-js/ubo-run.js                 # JIT
-//   GECKO_NOWASMJIT=1 node embed-js/run.cjs embed-js/ubo-run.js   # PBL baseline
-// Optionally precede with a tiny -e/prelude file that sets globalThis.UBO_LIST / UBO_ITERS.
-// Mirrors ubo-bench/bench-shell.js but for our minimal embed (uses read()).
+// uBlock filter-compile driver for the embed harness. Run via the unified runner:
+//   node bench/main.ts ubo            # JIT
+//   node bench/main.ts ubo --pbl      # PBL baseline    (--ab for both + ratio)
+// main.ts runs this child with cwd=bench/ubo, so load()/read() below resolve
+// build/ + data/ self-relatively. globalThis.UBO_LIST / UBO_ITERS may override.
+// Mirrors bench-shell.js but for the minimal embed (uses read()).
 
 // --- shim globals the uBlock SNFE dependency graph touches (from ubo-bench/shim.mjs) ---
 (function () {
