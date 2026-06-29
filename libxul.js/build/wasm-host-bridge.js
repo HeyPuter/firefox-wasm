@@ -130,18 +130,9 @@ mergeInto(LibraryManager.library, {
           // Mode VS no-restart helper: a JIT module's "m"."help" import re-enters
           // C++ to complete one op (operands in gWJHelp*; shares the guest heap, so
           // no whSyncMem). Returns 0 ok / 1 threw / (engine may grow guest memory).
-          // PERF: bind DIRECTLY to embed.wasm's raw `_wjhelp` export (signature
-          // (f64,f64)->f64, matching this import) so the call is a direct wasm->wasm
-          // cross-instance call -- NO per-helper-call JS trampoline frame (that hop
-          // was a big chunk of "JavaScript" time in --prof on helper-heavy benches).
-          // Falls back to the JS shim if the export isn't a raw wasm function.
-          var helpFn = Module['_wjhelp'];
-          var noDirect = (typeof process !== 'undefined' && process.env &&
-                          process.env.GECKO_WJ_NODIRECTHELP);
-          hostImports[imp.module][imp.name] =
-            (!noDirect && typeof helpFn === 'function')
-              ? helpFn
-              : function (kind, site) { return Module._wjhelp(kind, site); };
+          hostImports[imp.module][imp.name] = function (kind, site) {
+            return Module._wjhelp(kind, site);
+          };
           continue;
         }
         if (id < 0) continue;
@@ -220,16 +211,10 @@ mergeInto(LibraryManager.library, {
     var fn = r.fns[idx];
     if (typeof fn !== 'function') return 0;
     var base = argsptr >> 3;
+    var args = new Array(argc);
+    for (var i = 0; i < argc; i++) args[i] = HEAPF64[base + i];
     whSyncMem(h, 0);  // guest -> host before the export runs
-    var v;
-    if (argc === 1) v = fn(HEAPF64[base]);
-    else if (argc === 0) v = fn();
-    else if (argc === 2) v = fn(HEAPF64[base], HEAPF64[base + 1]);
-    else {
-      var args = new Array(argc);
-      for (var i = 0; i < argc; i++) args[i] = HEAPF64[base + i];
-      v = fn.apply(null, args);
-    }
+    var v = fn.apply(null, args);
     whSyncMem(h, 1);  // host -> guest after
     return typeof v === 'number' ? v : (typeof v === 'bigint' ? Number(v) : 0);
   },
@@ -335,8 +320,6 @@ mergeInto(LibraryManager.library, {
     var t = globalThis.__whObj[tid];
     var r = globalThis.__whReg && globalThis.__whReg[h];
     if (!t || !r || !r.fns) return -1;
-    // Register the module's "m" (main) export -- the register-arg ABI target of
-    // internal call_indirect. Fall back to the first export for older modules.
     var fn = null;
     for (var i = 0; i < r.exps.length; i++) {
       if (r.exps[i].name === 'm') { fn = r.fns[i]; break; }
