@@ -8,6 +8,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js (package root)
 PKG="$HERE"                                    # gecko.js
 ROOT="$(cd "$PKG/.." && pwd)"                  # repo root
 SRC="$HERE/src"                                # C++ embedder sources (embed-*.cpp)
+LIB="$HERE/lib"                                # --js-library glue (wisp-net.js, provider-fs.js, ...)
 BUILD="$HERE/build"                            # generated artifacts (.o, staged libs, gre-stage, link.err)
 mkdir -p "$BUILD"
 OBJ="$ROOT/obj-full-emscripten"
@@ -92,13 +93,13 @@ EMSETTINGS=(
   # backend patched into libwasmfs (emsdk-patches/wisp_socket.h); wisp-net.js is
   # the JS transport. Legacy SOCKFS/MEMFS/IDBFS are gone under WASMFS.
   -sWASMFS=1 -sALLOW_TABLE_GROWTH=1 -sWASM_BIGINT=1
-  --js-library "$HERE/wisp-net.js"
-  --js-library "$HERE/provider-fs.js"
-  --js-library "$HERE/wasm-host-bridge.js"
+  --js-library "$LIB/wisp-net.js"
+  --js-library "$LIB/provider-fs.js"
+  --js-library "$LIB/wasm-host-bridge.js"
   # Web Audio output: the wasm cubeb backend (firefox cubeb_wasmaudio.c) pulls PCM
   # into a shared-heap ring; this library drains it via a host AudioWorklet into an
   # AudioContext (emaudio_* run proxied on the main thread).
-  --js-library "$HERE/audio-out.js"
+  --js-library "$LIB/audio-out.js"
   # GPU present yield (gl-present.js): gl_present_yield is wired to JSPI MANUALLY in
   # the glue (patch-gecko-shaderfix.mjs) -- WebAssembly.Suspending on this one import
   # + WebAssembly.promising on the proxy/mailbox executors that reach SwapBuffers. We
@@ -106,7 +107,7 @@ EMSETTINGS=(
   # decode, proxy waits) suspend, and those die ("suspend JS frames") under Gecko's
   # pervasive JS frames (xptcall trampoline, DOM bindings). Scoping JSPI to this one
   # import keeps everything else on its original non-suspending block model.
-  --js-library "$HERE/gl-present.js"
+  --js-library "$LIB/gl-present.js"
   -sPROXY_TO_PTHREAD=1
   -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=1 -sFULL_ES3
   -sOFFSCREEN_FRAMEBUFFER=1 -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1 -sGL_ENABLE_GET_PROC_ADDRESS=1
