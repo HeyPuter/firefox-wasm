@@ -1,0 +1,6 @@
+{
+  "name": "bench",
+  "private": true,
+  "type": "module",
+  "description": "Unified benchmark/build harness for the wasm SpiderMonkey embed (bench/spidermonkey.js). Run: node bench/main.ts <suite> [names] [flags]."
+}
