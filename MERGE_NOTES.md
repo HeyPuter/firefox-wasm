@@ -93,7 +93,26 @@ is newest; the 2nd `mach build` then skipped the link and finished in 14s, 0 err
 (A durable fix would `touch` libxul.so at the end of relink-engine-r.sh; left unmodified
 to avoid diverging from origin — noted for follow-up.)
 
-### runnable bundle (`make libxul` → libxul.js/wasm/gecko.wasm)
-In progress at session end: pnpm install + build-lib.sh staged the gre, embed-xul.cpp
-compiled, final static link of embed-xul + libxul (-r) + glue → gecko.{js,wasm}. See
-the session log / watcher for the artifact.
+### runnable bundle (`make libxul` → libxul.js/dist) — BUILT
+`make libxul` completed (build:engine → build:bundle → build:types), 0 errors:
+- build:engine (build-lib.sh): embed-xul + libxul(-r) + glue → `libxul.js/wasm/gecko.{js,wasm,data}`
+  (gecko.wasm = 247 MB). This is the final whole-browser-in-one-wasm-module link, and it
+  succeeds with emscripten 6.0.1 (the earlier SIGSEGV was only the engine's `-shared` link).
+- build:bundle (rspack): `libxul.js/dist/libxul.js` (4 MB ESM) + `.map`.
+- build:types (tsc): `libxul.js/dist/index.d.ts`, 0 type errors.
+
+**Bundle fix (committed):** emscripten 6.0.1 no longer emits a separate `gecko.worker.js`
+(pthread workers spawn from the main module via `Module.mainScriptUrlOrBlob`, already set
+to the gecko.js blob), but `libxul.js/src/index.ts` still `import`ed it → rspack
+"Module not found". Dropped the obsolete import; mapped any stray `locateFile('gecko.worker.js')`
+to the main gecko.js blob. (Build-correct; the pthread-worker RUNTIME path on em6 wasn't
+browser-tested here — no browser in this env.)
+
+## Outcome
+Both merges landed conflict-light and are committed. js-embed verified working (octane
+correct). Full browser: engine libxul.so (valid wasm) + runnable libxul.js/dist bundle
+both build clean on emscripten 6.0.1. Two small build-config fixes committed (`-msimd128`
+mozconfigs; em6 worker loader). Known follow-ups: (a) `relink-engine-r.sh` should `touch`
+libxul.so last so `make build`'s 2nd pass reliably skips the link (worked around manually);
+(b) browser-runtime validation of the em6 pthread-worker path; (c) the incoming
+spidermonkey-style lint failures in MercuryWorkshop's new files (non-blocking).
