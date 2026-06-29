@@ -55,6 +55,6 @@ src += `
 const tmp = path.join(require('os').tmpdir(), 'octrun_' + name + '.js');
 fs.writeFileSync(tmp, src);
 const env = Object.assign({}, process.env);
-const r = cp.spawnSync('node', [path.join(__dirname, 'run.cjs'), tmp], {encoding:'utf8', env, timeout: 60000});
+const r = cp.spawnSync('node', ['--no-liftoff', '--stack-size=8000', path.join(__dirname, 'run.cjs'), tmp], {encoding:'utf8', env, timeout: 120000});
 process.stdout.write((r.stdout||'') );
 if (r.stderr) process.stderr.write(r.stderr.split('\n').filter(l=>/BENCH|ERR|ion-|uncaught|Error|abort/i.test(l)).join('\n'));

@@ -3736,6 +3736,24 @@ function _emscripten_return_address(level) {
  return convertFrameToPC(caller);
 }
 
+/** @type {function(...*):?} */ function _encoding_mem_convert_utf8_to_utf16() {
+ abort("missing function: encoding_mem_convert_utf8_to_utf16");
+}
+
+_encoding_mem_convert_utf8_to_utf16.stub = true;
+
+/** @type {function(...*):?} */ function _encoding_mem_is_ascii() {
+ abort("missing function: encoding_mem_is_ascii");
+}
+
+_encoding_mem_is_ascii.stub = true;
+
+/** @type {function(...*):?} */ function _encoding_mem_is_basic_latin() {
+ abort("missing function: encoding_mem_is_basic_latin");
+}
+
+_encoding_mem_is_basic_latin.stub = true;
+
 var ENV = {};
 
 var getExecutableName = () => thisProgram || "./this.program";
@@ -4165,13 +4183,28 @@ function whSyncMem(h, dir) {
 function _wasmhost_call(h, idx, argsptr, argc) {
  var r = globalThis.__whReg && globalThis.__whReg[h];
  if (!r || !r.fns) return 0;
+ if (idx === -1) {
+  try {
+   var fn0 = r.fns[0];
+   if (typeof fn0 !== "function") return -1;
+   var ti = wasmTable.grow(1);
+   wasmTable.set(ti, fn0);
+   if (typeof wasmTableMirror !== "undefined") wasmTableMirror[ti] = fn0;
+   return ti;
+  } catch (e) {
+   return -1;
+  }
+ }
  var fn = r.fns[idx];
  if (typeof fn !== "function") return 0;
  var base = argsptr >> 3;
- var args = new Array(argc);
- for (var i = 0; i < argc; i++) args[i] = HEAPF64[base + i >>> 0];
  whSyncMem(h, 0);
- var v = fn.apply(null, args);
+ var v;
+ if (argc === 1) v = fn(HEAPF64[base >>> 0]); else if (argc === 0) v = fn(); else if (argc === 2) v = fn(HEAPF64[base >>> 0], HEAPF64[base + 1 >>> 0]); else {
+  var args = new Array(argc);
+  for (var i = 0; i < argc; i++) args[i] = HEAPF64[base + i >>> 0];
+  v = fn.apply(null, args);
+ }
  whSyncMem(h, 1);
  return typeof v === "number" ? v : (typeof v === "bigint" ? Number(v) : 0);
 }
@@ -4327,7 +4360,9 @@ function _wasmhost_instantiate(h, callbackIdsPtr, importCount) {
     continue;
    }
    if (id === -3) {
-    hostImports[imp.module][imp.name] = function(kind, site) {
+    var helpFn = Module["_wjhelp"];
+    var noDirect = (typeof process !== "undefined" && process.env && process.env.GECKO_WJ_NODIRECTHELP);
+    hostImports[imp.module][imp.name] = (!noDirect && typeof helpFn === "function") ? helpFn : function(kind, site) {
      return Module._wjhelp(kind, site);
     };
     continue;
@@ -4378,9 +4413,11 @@ function _wasmhost_jit_table_set(h, idx) {
  if (tid === undefined || tid < 0) return -1;
  var t = globalThis.__whObj[tid];
  var r = globalThis.__whReg && globalThis.__whReg[h];
- if (!t || !r || !r.fns || !r.fns[0]) return -1;
+ if (!t || !r || !r.inst) return -1;
+ var fn = r.inst.exports["m"] || (r.fns && r.fns[0]);
+ if (typeof fn !== "function") return -1;
  try {
-  t.set(idx, r.fns[0]);
+  t.set(idx, fn);
   return 0;
  } catch (e) {
   return -1;
@@ -4722,6 +4759,9 @@ var wasmImports = {
  /** @export */ emscripten_get_now: _emscripten_get_now,
  /** @export */ emscripten_resize_heap: _emscripten_resize_heap,
  /** @export */ emscripten_return_address: _emscripten_return_address,
+ /** @export */ encoding_mem_convert_utf8_to_utf16: _encoding_mem_convert_utf8_to_utf16,
+ /** @export */ encoding_mem_is_ascii: _encoding_mem_is_ascii,
+ /** @export */ encoding_mem_is_basic_latin: _encoding_mem_is_basic_latin,
  /** @export */ environ_get: _environ_get,
  /** @export */ environ_sizes_get: _environ_sizes_get,
  /** @export */ exit: _exit,
@@ -4758,19 +4798,21 @@ var wasmExports = createWasm();
 
 var ___wasm_call_ctors = () => (___wasm_call_ctors = wasmExports["__wasm_call_ctors"])();
 
+var _free = Module["_free"] = a0 => (_free = Module["_free"] = wasmExports["free"])(a0);
+
 var _main = Module["_main"] = (a0, a1) => (_main = Module["_main"] = wasmExports["__main_argc_argv"])(a0, a1);
 
-var _free = Module["_free"] = a0 => (_free = Module["_free"] = wasmExports["free"])(a0);
+var _WJTraceDumpNow = Module["_WJTraceDumpNow"] = () => (_WJTraceDumpNow = Module["_WJTraceDumpNow"] = wasmExports["WJTraceDumpNow"])();
 
 var _malloc = Module["_malloc"] = a0 => (_malloc = Module["_malloc"] = wasmExports["malloc"])(a0);
 
 var _WJTraceRoots = Module["_WJTraceRoots"] = (a0, a1) => (_WJTraceRoots = Module["_WJTraceRoots"] = wasmExports["WJTraceRoots"])(a0, a1);
 
-var _wasmjit_invoke = Module["_wasmjit_invoke"] = (a0, a1) => (_wasmjit_invoke = Module["_wasmjit_invoke"] = wasmExports["wasmjit_invoke"])(a0, a1);
+var _wasmhost_invoke_import = Module["_wasmhost_invoke_import"] = (a0, a1, a2) => (_wasmhost_invoke_import = Module["_wasmhost_invoke_import"] = wasmExports["wasmhost_invoke_import"])(a0, a1, a2);
 
 var _wjhelp = Module["_wjhelp"] = (a0, a1) => (_wjhelp = Module["_wjhelp"] = wasmExports["wjhelp"])(a0, a1);
 
-var _wasmhost_invoke_import = Module["_wasmhost_invoke_import"] = (a0, a1, a2) => (_wasmhost_invoke_import = Module["_wasmhost_invoke_import"] = wasmExports["wasmhost_invoke_import"])(a0, a1, a2);
+var _wasmjit_invoke = Module["_wasmjit_invoke"] = (a0, a1) => (_wasmjit_invoke = Module["_wasmjit_invoke"] = wasmExports["wasmjit_invoke"])(a0, a1);
 
 var _emscripten_builtin_memalign = (a0, a1) => (_emscripten_builtin_memalign = wasmExports["emscripten_builtin_memalign"])(a0, a1);
 

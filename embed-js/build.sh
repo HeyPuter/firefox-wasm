@@ -71,3 +71,5 @@ echo ">> link rc=$rc"
 if [ $rc -ne 0 ]; then echo "=== link.err tail ==="; tail -30 "$HERE/link.err"; fi
 echo "=== undefined symbol count ==="; grep -c "undefined symbol:" "$HERE/link.err" 2>/dev/null
 ls -la "$HERE"/embed.js "$HERE"/embed.wasm 2>/dev/null
+
+exit $rc

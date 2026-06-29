@@ -20,6 +20,7 @@ const createEmbed = require("./embed.js");
   let rc = 0;
   try { rc = Module.callMain(args); } catch (e) {
     console.error("[run] callMain threw:", e && e.message ? e.message : e);
+    if (e && e.stack) console.error(e.stack.split("\n").slice(0, 40).join("\n"));
     rc = 1;
   }
   process.exit(rc || 0);

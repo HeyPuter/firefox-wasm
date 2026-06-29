@@ -130,9 +130,18 @@ mergeInto(LibraryManager.library, {
           // Mode VS no-restart helper: a JIT module's "m"."help" import re-enters
           // C++ to complete one op (operands in gWJHelp*; shares the guest heap, so
           // no whSyncMem). Returns 0 ok / 1 threw / (engine may grow guest memory).
-          hostImports[imp.module][imp.name] = function (kind, site) {
-            return Module._wjhelp(kind, site);
-          };
+          // PERF: bind DIRECTLY to embed.wasm's raw `_wjhelp` export (signature
+          // (f64,f64)->f64, matching this import) so the call is a direct wasm->wasm
+          // cross-instance call -- NO per-helper-call JS trampoline frame (that hop
+          // was a big chunk of "JavaScript" time in --prof on helper-heavy benches).
+          // Falls back to the JS shim if the export isn't a raw wasm function.
+          var helpFn = Module['_wjhelp'];
+          var noDirect = (typeof process !== 'undefined' && process.env &&
+                          process.env.GECKO_WJ_NODIRECTHELP);
+          hostImports[imp.module][imp.name] =
+            (!noDirect && typeof helpFn === 'function')
+              ? helpFn
+              : function (kind, site) { return Module._wjhelp(kind, site); };
           continue;
         }
         if (id < 0) continue;
@@ -196,13 +205,32 @@ mergeInto(LibraryManager.library, {
   wasmhost_call: function (h, idx, argsptr, argc) {
     var r = globalThis.__whReg && globalThis.__whReg[h];
     if (!r || !r.fns) return 0;
+    if (idx === -1) {
+      // Register r.fns[0] (the (f64)->f64 trampoline) into the MAIN module's
+      // indirect function table; return its slot so C can call it via a direct
+      // function pointer (call_indirect) with NO wasm->JS->wasm hop.
+      try {
+        var fn0 = r.fns[0];
+        if (typeof fn0 !== 'function') return -1;
+        var ti = wasmTable.grow(1);
+        wasmTable.set(ti, fn0);
+        if (typeof wasmTableMirror !== 'undefined') wasmTableMirror[ti] = fn0;
+        return ti;
+      } catch (e) { return -1; }
+    }
     var fn = r.fns[idx];
     if (typeof fn !== 'function') return 0;
     var base = argsptr >> 3;
-    var args = new Array(argc);
-    for (var i = 0; i < argc; i++) args[i] = HEAPF64[base + i];
     whSyncMem(h, 0);  // guest -> host before the export runs
-    var v = fn.apply(null, args);
+    var v;
+    if (argc === 1) v = fn(HEAPF64[base]);
+    else if (argc === 0) v = fn();
+    else if (argc === 2) v = fn(HEAPF64[base], HEAPF64[base + 1]);
+    else {
+      var args = new Array(argc);
+      for (var i = 0; i < argc; i++) args[i] = HEAPF64[base + i];
+      v = fn.apply(null, args);
+    }
     whSyncMem(h, 1);  // host -> guest after
     return typeof v === 'number' ? v : (typeof v === 'bigint' ? Number(v) : 0);
   },
@@ -303,8 +331,12 @@ mergeInto(LibraryManager.library, {
     if (tid === undefined || tid < 0) return -1;
     var t = globalThis.__whObj[tid];
     var r = globalThis.__whReg && globalThis.__whReg[h];
-    if (!t || !r || !r.fns || !r.fns[0]) return -1;
-    try { t.set(idx, r.fns[0]); return 0; } catch (e) { return -1; }
+    if (!t || !r || !r.inst) return -1;
+    // Register the module's "m" (main) export -- the register-arg ABI target of
+    // internal call_indirect. Fall back to the first export for older modules.
+    var fn = r.inst.exports['m'] || (r.fns && r.fns[0]);
+    if (typeof fn !== 'function') return -1;
+    try { t.set(idx, fn); return 0; } catch (e) { return -1; }
   },
 
   // 1 if the guest memory is backed by a SharedArrayBuffer (the JIT module must
