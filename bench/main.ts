@@ -205,7 +205,8 @@ function runUbo(f: ReturnType<typeof parseFlags>) {
   const files = [path.join(UBO, 'ubo-run.js')];
   console.log('# ubo (total ms, lower=better)' + (f.ab ? '  [pbl/jit ratio]' : f.pbl ? '  [PBL]' : '  [JIT]'));
   const doRun = (pbl: boolean) => {
-    const r = runEmbed(files, { env: baseEnv(f, pbl), cwd: ROOT, timeoutS: Math.max(f.timeoutS, 300) });
+    // ubo-run.js load()/read() the bundle + filter lists relative to bench/ubo.
+    const r = runEmbed(files, { env: baseEnv(f, pbl), cwd: UBO, timeoutS: Math.max(f.timeoutS, 300) });
     const ms = grab(r.out, /UBOTOTALMS=([\d.]+)/);
     const correct = /net 64250/.test(r.out);
     return { ms: ms ? +ms : null, correct, raw: r };

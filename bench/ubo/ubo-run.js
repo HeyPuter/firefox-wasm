@@ -108,12 +108,13 @@
   }
 })();
 
-load('ubo-bench/build/compile-bundle.iife.js');   // -> globalThis.uboBench
+// Paths are relative to bench/ubo (main.ts runs this child with cwd=bench/ubo).
+load('build/compile-bundle.iife.js');   // -> globalThis.uboBench
 
 var LIST = (typeof globalThis.UBO_LIST !== 'undefined') ? globalThis.UBO_LIST : 'easylist.txt';
 var ITERS = (typeof globalThis.UBO_ITERS !== 'undefined') ? globalThis.UBO_ITERS : 4;
 var lists = LIST.split(',');
-var raw = lists.map(function (n) { return read('ubo-bench/data/' + n); });
+var raw = lists.map(function (n) { return read('data/' + n); });
 var bytes = raw.reduce(function (a, s) { return a + s.length; }, 0);
 print('UBO lists: ' + lists.join(',') + '  (' + bytes + ' bytes)  iters=' + ITERS);
 
