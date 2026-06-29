@@ -68,6 +68,22 @@ if (process.argv[2] === '__exec') {
     }
     process.exit(rc || 0);
   });
+} else if (process.argv[2] === '__jsshell') {
+  // js-shell mode: forward argv VERBATIM (no path resolution) — jit_test.py passes
+  // -e/-f flags, --thread-count, and absolute test paths that embed.cpp parses itself.
+  const require = createRequire(import.meta.url);
+  const createEmbed = require(EMBED);
+  const args = process.argv.slice(3);
+  const env = { ...process.env };
+  createEmbed({
+    noInitialRun: true, ENV: env,
+    preRun: [(m: any) => { try { Object.assign(m.ENV, env); } catch {} }],
+    print: (s: string) => console.log(s), printErr: (s: string) => console.error(s),
+  }).then((M: any) => {
+    let rc = 0;
+    try { rc = M.callMain(args); } catch (e: any) { console.error('[main __jsshell] threw:', e?.message ?? e); rc = 1; }
+    process.exit(rc || 0);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -283,13 +299,21 @@ function runRealapp(which: string, f: ReturnType<typeof parseFlags>) {
   }
 }
 
+const JITTEST = path.join(BENCH, 'jittest');
 function runJittest(rest: string[], f: ReturnType<typeof parseFlags>) {
-  // Forward argv verbatim to the embed (js-shell mode: -e/-f/absolute paths).
-  const i = rest.indexOf('--');
-  const args = i >= 0 ? rest.slice(i + 1) : rest;
-  const env = { ...process.env, ...baseEnv(f, f.pbl) };
-  const r = spawnSync(process.execPath, ['--no-liftoff', '--stack-size=8000', SELF, '__exec', ...args],
-    { encoding: 'utf8', env, cwd: ROOT, stdio: 'inherit', timeout: f.timeoutS * 1000 });
+  // Run SpiderMonkey's own jit-test suite against the wasm embed: jit_test.py drives
+  // bench/jittest/jsshell (-> node main.ts __jsshell ...). Validates BOTH correctness
+  // (expected pass/throw) AND stay-in-JIT (`do{f()}while(!inWasmJit())` warmups only
+  // finish once f is wasm-JIT-compiled). Pass test filters as names (e.g. `arguments`,
+  // `ion/dce`); none = the whole suite (slow). Honors WJ_TIMEOUT / WJ_JOBS, GECKO_* env.
+  const py = path.join(ROOT, 'firefox', 'js', 'src', 'jit-test', 'jit_test.py');
+  if (!fs.existsSync(py)) { console.error('jit_test.py not found at ' + py); process.exit(2); }
+  const args = [py, '-t', process.env.WJ_TIMEOUT ?? '40', '-j', process.env.WJ_JOBS ?? '8',
+    '--no-progress', '--exclude-from', path.join(JITTEST, 'jit-test-exclude.txt'),
+    path.join(JITTEST, 'jsshell'), ...rest];
+  const env = { ...process.env, ...baseEnv(f, f.pbl), EMSDK, EM_CONFIG: path.join(ROOT, 'em_config') };
+  const r = spawnSync('python3', args, { encoding: 'utf8', env, cwd: ROOT, stdio: 'inherit',
+    timeout: Math.max(f.timeoutS, 3600) * 1000 });
   process.exit(r.status ?? 0);
 }
 
@@ -411,4 +435,4 @@ function main() {
 
 // Entry dispatch runs last so the const bench-tables above are initialized first
 // (function decls hoist; const/let stay in the temporal dead zone until evaluated).
-if (process.argv[2] !== '__exec') main();
+if (process.argv[2] !== '__exec' && process.argv[2] !== '__jsshell') main();

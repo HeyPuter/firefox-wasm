@@ -1,0 +1,13 @@
+# Subsystems the minimal embed-js shell does not implement, so their jit-tests
+# can't pass regardless of JIT correctness. Excluded by run-jit-tests.sh.
+# (Pass paths/dirs relative to js/src/jit-test/tests/.)
+#
+# Debugger API (the shell has no Debugger object):
+debug
+# asm.js (not wired in this embedder):
+asm.js
+# Ion-specific bailout/recovery introspection (assertRecoveredOnBailout,
+# Ion frame iteration) -- this build runs the wasm JIT, not Ion:
+ion/recover-arguments.js
+ion/recover-inline-arguments.js
+ion/recover-inline-arguments-debugger.js

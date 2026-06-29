@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Presented to jit_test.py as the "js shell" binary. Forwards all args VERBATIM
+# (no path resolution) to the node-hosted wasm SpiderMonkey embed via main.ts.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec node --no-liftoff --stack-size=8000 "$HERE/../main.ts" __jsshell "$@"

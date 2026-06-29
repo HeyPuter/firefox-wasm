@@ -21,8 +21,25 @@ bench/
   ubo/                    ubo-run.js + build/ + data/ (self-contained uBlock filter-compile)
   microbenches/           focused JIT-path probes (one codegen path each) + micro-driver.js
   disas/                  codegen CHECK tests (FileCheck-style WAT assertions)
+  jittest/                jsshell wrapper + exclude list for SpiderMonkey's jit-test suite
   main.ts                 the unified runner (orchestrator + __exec child mode)
 ```
+
+### jit-test suite (SpiderMonkey's own correctness tests)
+`node bench/main.ts jittest [filters...]` runs the in-tree `js/src/jit-test` suite
+against the wasm embed. `jit_test.py` drives `bench/jittest/jsshell` (-> `node main.ts
+__jsshell ...`, which forwards argv verbatim). It validates BOTH **correctness**
+(expected pass / expected-throw matching) AND **stay-in-JIT** — the suite's
+`do { f(); } while (!inWasmJit())` warmups only terminate once `f` is wasm-JIT-compiled.
+```
+node bench/main.ts jittest access-formals       # one test (substring match)
+node bench/main.ts jittest ion/dce               # an area
+node bench/main.ts jittest                        # whole suite (slow)
+WJ_JOBS=8 WJ_TIMEOUT=40 node bench/main.ts jittest arguments   # tune parallelism/timeout
+```
+`bench/jittest/jit-test-exclude.txt` skips subsystems the minimal embed can't support
+(Debugger, asm.js, Ion-recovery introspection, …). Tests needing absent shell builtins
+(`createIsHTMLDDA`, etc.) fail as embed limitations, not JIT bugs — add them there.
 
 ### disassembler + codegen tests
 `GECKO_WJ_WASMDUMP=<line>` makes the JIT dump the wasm it emitted for the function on
