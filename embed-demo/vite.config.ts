@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
-import { server as wisp } from '@mercuryworkshop/wisp-js/server';
+import { server as wisp, logging as wispLogging } from '@mercuryworkshop/wisp-js/server';
 
 // gecko.js ships the emscripten engine artifacts next to its bundle (dist/).
 const require = createRequire(import.meta.url);
@@ -13,7 +13,7 @@ const libDist = path.join(path.dirname(require.resolve('gecko.js/package.json'))
 const ENGINE = ['gecko.wasm', 'gecko.wasm.zst'];
 const mime = (n: string) =>
   n.endsWith('.wasm') ? 'application/wasm' :
-  n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
+    n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
 
 // Serve the engine artifacts at the server root (/gecko.*) in dev, and emit them
 // into the build output. (gecko.js's loadEngine injects <script src="/gecko.js">
@@ -51,6 +51,14 @@ function wispProxy(): Plugin {
   return {
     name: 'wisp-proxy',
     configureServer(server) {
+      // Headless tests (libcurltest.cjs) serve assets on a loopback port and
+      // load them in the embedded engine over WISP; wisp-js blocks loopback /
+      // private IPs by default, so opt in when explicitly testing.
+      // if (process.env.GECKO_WISP_ALLOW_LOOPBACK) {
+      wisp.options.allow_loopback_ips = true;
+      wisp.options.allow_private_ips = true;
+      if (process.env.GECKO_WISP_DEBUG) wispLogging.set_level(wispLogging.DEBUG);
+      // }
       server.httpServer?.on('upgrade', (req, socket, head) => {
         if ((req.url || '').startsWith('/wisp')) {
           wisp.routeRequest(req, socket as any, head);

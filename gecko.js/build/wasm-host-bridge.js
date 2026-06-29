@@ -114,10 +114,22 @@ mergeInto(LibraryManager.library, {
       }
 
       var hostImports = {};
+      // callbackIdsPtr is a wasm32 pointer arriving as a SIGNED i32: when the
+      // engine memory is large (>2GB, e.g. the nested inner engine), a C-stack
+      // address has its high bit set and shows up negative here, so HEAP32[ptr>>2]
+      // reads out of bounds (undefined). Also HEAP32 itself can be a stale
+      // pre-growth view. Re-derive a live Int32Array over the current buffer at
+      // the UNSIGNED offset for this read.
+      var __uptr = callbackIdsPtr >>> 0;
+      var __mem = (typeof wasmMemory !== 'undefined' && wasmMemory) ? wasmMemory
+                : (typeof Module !== 'undefined' && Module.wasmMemory) ? Module.wasmMemory : null;
+      var __ids = (__mem && (__uptr + importCount * 4) <= __mem.buffer.byteLength)
+                ? new Int32Array(__mem.buffer, __uptr, importCount)
+                : null;
       for (var i = 0; i < importCount; i++) {
         var imp = r.imports[i];
         if (!hostImports[imp.module]) hostImports[imp.module] = {};
-        var id = HEAP32[(callbackIdsPtr >> 2) + i];
+        var id = __ids ? __ids[i] : HEAP32[(__uptr >>> 2) + i];
         if (id === -2) {
           // JS->wasm JIT call dispatch: a JIT module's "m"."call" import re-enters
           // C++ to invoke the cached callee's wasm (args already in gWJScratch).
@@ -132,6 +144,15 @@ mergeInto(LibraryManager.library, {
           // no whSyncMem). Returns 0 ok / 1 threw / (engine may grow guest memory).
           hostImports[imp.module][imp.name] = function (kind, site) {
             return Module._wjhelp(kind, site);
+          };
+          continue;
+        }
+        if (id === -10) {
+          // Flavor-B wasm->wasm JIT dispatch (WasmInterpJit-inl.h): the host
+          // module shares the guest/engine memory (no mirror), so b_help re-enters
+          // the interpreter for calls/grow/traps. (kind, a, b, c) -> i32 status.
+          hostImports[imp.module][imp.name] = function (kind, a, b, c) {
+            return Module._b_help(kind, a, b, c);
           };
           continue;
         }

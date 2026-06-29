@@ -33,6 +33,18 @@ if (opts.gpu) {
 }
 if (!opts.jit) env.GECKO_NOWASMJIT = '1';
 
+// Generic `?env.FOO=bar` knob: forward arbitrary engine env vars (e.g.
+// ?env.GECKO_WASM_INTERP=1 to run content WebAssembly in the in-process
+// interpreter). Useful for headless testing.
+for (const [k, v] of new URLSearchParams(location.search)) {
+  if (k.startsWith('env.')) env[k.slice(4)] = v;
+}
+// Env override injected by a host page (e.g. the nested embed-demo-in-embed-demo
+// harness sets GECKO_SKIP_OPFS=1, since the URL query is stripped on the inner
+// engine's content navigation).
+const geEnv = (window as unknown as { GECKO_ENV?: Record<string, string> }).GECKO_ENV;
+if (geEnv) Object.assign(env, geEnv);
+
 const gecko = new Gecko({
   canvas,
   // The vite plugin serves gecko.wasm + gecko.data at the server root.
@@ -45,6 +57,9 @@ const gecko = new Gecko({
 
 await gecko.init();
 console.log('[demo] engine ready');
+// Expose the engine for headless tests / debugging.
+(window as unknown as { gecko: Gecko; __geckoReady: boolean }).gecko = gecko;
+(window as unknown as { __geckoReady: boolean }).__geckoReady = true;
 
 // Persist the current control values and restart the engine to apply them.
 function applyAndReload(): void {
