@@ -20,8 +20,32 @@ bench/
   realapp/                acorn / marked libs + bench harnesses (real-app diff)
   ubo/                    ubo-run.js + build/ + data/ (self-contained uBlock filter-compile)
   microbenches/           focused JIT-path probes (one codegen path each) + micro-driver.js
+  disas/                  codegen CHECK tests (FileCheck-style WAT assertions)
   main.ts                 the unified runner (orchestrator + __exec child mode)
 ```
+
+### disassembler + codegen tests
+`GECKO_WJ_WASMDUMP=<line>` makes the JIT dump the wasm it emitted for the function on
+that source line (`/tmp/wbjit_<line>.wasm`) at compile time — non-perturbing. `main.ts`
+wraps this with `wasm-dis` (binaryen):
+```
+node bench/main.ts disas <file.js> --fn NAME       # print the WAT the JIT emitted for NAME
+node bench/main.ts disas <file.js> --line N --grep 'f64\.'   # filter WAT lines
+```
+The function must get hot (call-count trigger), so the file must call it many times.
+
+`bench/disas/*.js` are FileCheck-style codegen regression tests — a file that drives one
+function hot, with directives in leading comments:
+```
+// FN: fma                  function to disassemble (required)
+// CHECK-COMPILES           assert it compiled (didn't bail to PBL)
+// CHECK: f64.add           WAT must contain (regex)
+// CHECK-NOT: call $fimport  WAT must NOT contain (e.g. no helper hop)
+// CHECK-COUNT-2: f64.mul   exactly N matches
+```
+`node bench/main.ts disastest [names]` runs them and exits nonzero on any failure — so a
+codegen regression (an op that starts bailing, or a fast path that turns into a helper
+call) is caught mechanically.
 
 ### microbenches/
 Small single-purpose benches that each isolate ONE JIT codegen path, in the same

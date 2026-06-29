@@ -41,6 +41,10 @@ const JETSTREAM = path.join(BENCH, 'jetstream');
 const REALAPP = path.join(BENCH, 'realapp');
 const UBO = path.join(BENCH, 'ubo');
 const MICRO = path.join(BENCH, 'microbenches');
+const DISAS = path.join(BENCH, 'disas');
+const EMSDK = process.env.EMSDK || '/home/claude/emsdk';
+const WASM_DIS = [path.join(EMSDK, 'upstream', 'bin', 'wasm-dis'), 'wasm-dis']
+  .find((p) => p === 'wasm-dis' || fs.existsSync(p)) ?? 'wasm-dis';
 
 // ---------------------------------------------------------------------------
 // Child mode: load the embed, run the given JS files in one VM, exit.
@@ -291,6 +295,92 @@ function runJittest(rest: string[], f: ReturnType<typeof parseFlags>) {
 
 const pad = (s: string) => (s + ' ').padEnd(16, '.') + ' ';
 
+// ---------------------------------------------------------------------------
+// Disassembler: dump the wasm the JIT emitted for ONE function and show its WAT.
+// GECKO_WJ_WASMDUMP=<line> writes /tmp/wbjit_<line>.wasm at compile time (no
+// runtime perturbation); wasm-dis turns it into WAT. The function must get hot
+// (call-count trigger), so the driven JS must call it many times.
+// ---------------------------------------------------------------------------
+function findFnLine(src: string, name: string): number {
+  const lines = src.split('\n');
+  const pats = [
+    new RegExp(`\\bfunction\\s+${name}\\b`),
+    new RegExp(`\\b${name}\\s*[:=]\\s*function\\b`),
+    new RegExp(`\\b${name}\\s*\\([^)]*\\)\\s*\\{`),     // method / shorthand
+    new RegExp(`\\b${name}\\s*=\\s*\\(?[^)]*\\)?\\s*=>`), // arrow
+  ];
+  for (let i = 0; i < lines.length; i++) for (const p of pats) if (p.test(lines[i])) return i + 1;
+  return -1;
+}
+function watDis(wasmPath: string): string {
+  const r = spawnSync(WASM_DIS, [wasmPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return r.stdout ?? '';
+}
+// Run jsFile so the fn at `line` JIT-compiles, return its WAT ('' if it never compiled).
+function dumpFnWat(jsFile: string, line: number, env: Record<string, string> = {}, timeoutS = 120): { wat: string; out: string } {
+  const out = `/tmp/wbjit_${line}.wasm`;
+  try { fs.rmSync(out, { force: true }); } catch {}
+  const r = runEmbed([jsFile], { env: { ...env, GECKO_WJ_WASMDUMP: String(line) }, timeoutS });
+  return { wat: fs.existsSync(out) ? watDis(out) : '', out: r.out + r.err };
+}
+
+function runDisas(rest: string[], f: ReturnType<typeof parseFlags>) {
+  const jsFile = rest.find((a) => a.endsWith('.js'));
+  if (!jsFile) { console.error('usage: node bench/main.ts disas <file.js> [--fn name | --line N] [--grep pat]'); process.exit(2); }
+  const abs = path.resolve(jsFile);
+  const src = fs.readFileSync(abs, 'utf8');
+  const fnIdx = rest.indexOf('--fn'); const lineIdx = rest.indexOf('--line'); const grepIdx = rest.indexOf('--grep');
+  let line = lineIdx >= 0 ? +rest[lineIdx + 1] : -1;
+  if (line < 0 && fnIdx >= 0) { line = findFnLine(src, rest[fnIdx + 1]); if (line < 0) { console.error(`fn '${rest[fnIdx + 1]}' not found in ${jsFile}`); process.exit(2); } }
+  if (line < 0) line = 1; // dump-all fallback
+  const { wat, out } = dumpFnWat(abs, line, baseEnv(f, f.pbl), f.timeoutS);
+  if (!wat) { console.error(`no wasm dumped for line ${line} (fn never compiled? bailed? not hot enough?)\n--- embed output tail ---\n${out.split('\n').slice(-12).join('\n')}`); process.exit(1); }
+  const grep = grepIdx >= 0 ? new RegExp(rest[grepIdx + 1]) : null;
+  const lines = wat.split('\n');
+  console.log(`# WAT for fn@line ${line} of ${path.basename(jsFile)} (${lines.length} lines)`);
+  console.log((grep ? lines.filter((l) => grep.test(l)) : lines).join('\n'));
+}
+
+// ---------------------------------------------------------------------------
+// Codegen tests (FileCheck-style). Each bench/disas/<name>.js has leading
+// directives + a body that drives one function hot:
+//   // FN: <name>                 the function to disassemble (required)
+//   // CHECK: <regex>             WAT must contain (in order)
+//   // CHECK-NOT: <regex>         WAT must NOT contain
+//   // CHECK-COUNT-<N>: <regex>   exactly N matches
+//   // CHECK-COMPILES            assert the fn compiled at all
+// ---------------------------------------------------------------------------
+function runDisasTest(names: string[], f: ReturnType<typeof parseFlags>) {
+  const all = fs.existsSync(DISAS) ? fs.readdirSync(DISAS).filter((x) => x.endsWith('.js')).map((x) => x.slice(0, -3)).sort() : [];
+  const list = names.length ? names : all;
+  console.log('# disas codegen tests');
+  let pass = 0, fail = 0;
+  for (const name of list) {
+    const file = path.join(DISAS, `${name}.js`);
+    if (!fs.existsSync(file)) { console.log(pad(name) + 'UNKNOWN'); fail++; continue; }
+    const src = fs.readFileSync(file, 'utf8');
+    const dir = (re: RegExp) => [...src.matchAll(new RegExp(re.source, 'g'))].map((m) => m[1].trim());
+    const fnName = dir(/\/\/\s*FN:\s*(.+)/)[0];
+    if (!fnName) { console.log(pad(name) + 'NO FN: directive'); fail++; continue; }
+    const line = findFnLine(src, fnName);
+    if (line < 0) { console.log(pad(name) + `fn '${fnName}' not found`); fail++; continue; }
+    const { wat, out } = dumpFnWat(file, line, baseEnv(f, false), f.timeoutS);
+    const fails: string[] = [];
+    const compiles = src.includes('CHECK-COMPILES') || true;
+    if (!wat) { console.log(pad(name) + `FAIL (fn '${fnName}'@${line} did not compile)` + (f.bails ? `  ${out.split('\n').slice(-3).join(' ')}` : '')); fail++; continue; }
+    for (const c of dir(/\/\/\s*CHECK:\s*(.+)/)) if (!new RegExp(c).test(wat)) fails.push(`CHECK miss: /${c}/`);
+    for (const c of dir(/\/\/\s*CHECK-NOT:\s*(.+)/)) if (new RegExp(c).test(wat)) fails.push(`CHECK-NOT hit: /${c}/`);
+    for (const m of src.matchAll(/\/\/\s*CHECK-COUNT-(\d+):\s*(.+)/g)) {
+      const want = +m[1], re = new RegExp(m[2].trim(), 'g'); const got = (wat.match(re) ?? []).length;
+      if (got !== want) fails.push(`CHECK-COUNT-${want} got ${got}: /${m[2].trim()}/`);
+    }
+    if (fails.length) { console.log(pad(name) + 'FAIL  ' + fails.join('; ')); fail++; }
+    else { console.log(pad(name) + `ok (${wat.split('\n').length} WAT lines)`); pass++; }
+  }
+  console.log(`# ${pass} passed, ${fail} failed`);
+  if (fail) process.exit(1);
+}
+
 function main() {
   const [suite, ...argv] = process.argv.slice(2);
   const f = parseFlags(argv);
@@ -300,15 +390,21 @@ function main() {
     case 'micro': case 'microbenches': return runMicro(f.rest, f);
     case 'ubo': return runUbo(f);
     case 'realapp': return runRealapp(f.rest[0] ?? 'all', f);
+    case 'disas': return runDisas(f.rest, f);
+    case 'disastest': return runDisasTest(f.rest, f);
     case 'jittest': return runJittest(f.rest, f);
     case 'list':
       console.log('octane:    ' + Object.keys(OCT).join(' '));
       console.log('jetstream: ' + fs.readdirSync(JETSTREAM).filter((x) => x.endsWith('.js') && x !== 'jetstream-driver.js').map((x) => x.slice(0, -3)).join(' '));
       console.log('micro:     ' + fs.readdirSync(MICRO).filter((x) => x.endsWith('.js') && x !== 'micro-driver.js').map((x) => x.slice(0, -3)).join(' '));
+      console.log('disastest: ' + (fs.existsSync(DISAS) ? fs.readdirSync(DISAS).filter((x) => x.endsWith('.js')).map((x) => x.slice(0, -3)).join(' ') : ''));
       console.log('realapp:   acorn marked');
       return;
     default:
-      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|jittest|list> [names...] [--pbl|--ab|--bails|--iters N|--warm N|--gczeal N|--nursery-mb N]');
+      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|disas|disastest|jittest|list> [names...] [flags]\n'
+        + '  disas <file.js> --fn NAME [--grep RE]   show the WAT the JIT emitted for a function\n'
+        + '  disastest [names]                       run bench/disas/*.js codegen CHECK tests\n'
+        + '  flags: --pbl --ab --bails --iters N --warm N --gczeal N --nursery-mb N --timeout S');
       process.exit(2);
   }
 }
