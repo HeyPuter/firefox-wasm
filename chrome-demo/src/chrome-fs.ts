@@ -40,6 +40,11 @@ const REQUIRED_FILES = [
   'fonts/LiberationSans-Regular.ttf',
   'browser/fonts/LiberationSans-Regular.ttf',
   'browser/chrome.manifest',
+  // Eagerly loaded by the context-menu actor (resource://pdf.js/PdfjsContextMenu.sys.mjs).
+  // Listing it forces re-extraction of any stale OPFS tree that predates the pdfjs trim
+  // (e.g. extracted while the tar still excluded all of chrome/pdfjs), even if the
+  // clobber version happens to match -- otherwise right-click throws "Failed to load".
+  'chrome/pdfjs/content/PdfjsContextMenu.sys.mjs',
 ];
 
 const textDecoder = new TextDecoder();

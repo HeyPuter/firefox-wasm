@@ -68,9 +68,20 @@ ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOM
 # missing FT_Done_MM_Var / variable fonts / COLRv1). tree_freetype is enabled
 # for EMSCRIPTEN in toolkit/moz.configure; expose the headers globally so every
 # dir resolves <ft2build.h> to the in-tree copy, and link the in-tree lib.
-export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
-export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread"
+# -msimd128 enables WebAssembly fixed-width 128-bit SIMD: LLVM autovectorization +
+# emscripten's SSE->wasm-simd intrinsic headers, so Gecko's SIMD paths (Skia, image/
+# media decode, qcms, memcpy) emit real wasm SIMD instead of scalar fallbacks. Browser
+# support is universal. This is a per-TU codegen flag -> forces a full engine rebuild.
+export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread -msimd128"
+export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread -msimd128"
 export LDFLAGS="-pthread"
+# Rust also needs wasm SIMD enabled: -msimd128 above only affects clang (C/C++); Rust's
+# equivalent is the simd128 target-feature (off by default for wasm32-unknown-emscripten).
+# This turns on LLVM autovectorization for ALL Rust (Stylo, WebRender, ...) and the
+# core::arch::wasm32 fast paths in SIMD-aware crates (memchr, encoding_rs) + std (built
+# from source via -Z build-std). Honored as the Gecko `RUSTFLAGS` configure option,
+# additive to MOZ_RUST_DEFAULT_FLAGS.
+export RUSTFLAGS="-Ctarget-feature=+simd128"
 # When LTO is opted in (GECKO_LTO=1), cap ThinLTO backend parallelism: lld defaults to
 # one codegen job per core, and parallel jobs over the 3.4GB libxul multiply peak RAM.
 # (This bounds parallelism only; it does NOT fix the single-process combine peak, which

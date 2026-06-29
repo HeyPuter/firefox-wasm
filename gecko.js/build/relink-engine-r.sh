@@ -33,7 +33,10 @@ relink() {  # $1=make-subdir  $2=libname  $3=drop-dependent-so-inputs(0/1)
   local bak=""
   [ -e "$so" ] && { bak="${so}.relink-bak"; mv -f "$so" "$bak"; }
   local cmd
-  cmd=$(make -C "$dir" -n V=1 2>/dev/null \
+  # The shared-lib link lives in the `target` tier, not the leaf's default goal
+  # (which is empty once the RecursiveMake backend has been regenerated), so
+  # derive the recipe from `make target`.
+  cmd=$(make -C "$dir" -n V=1 target 2>/dev/null \
         | grep -E "em(cc|\+\+) .* -o +\S*${lib}\.so" | head -1 | sed 's#^/usr/bin/sccache ##')
   [ -n "$bak" ] && mv -f "$bak" "$so"
   [ -n "$cmd" ] || { echo "!! relink-engine-r: could not derive link recipe for $lib"; return 1; }

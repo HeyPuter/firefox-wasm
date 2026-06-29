@@ -50,6 +50,23 @@ const GRE_EXCLUDES = [
   '/nsinstall_real',
 ];
 
+// Trim heavy, optional feature trees from the chrome bundle unless CHROME_FULL=1
+// (which ships the complete Firefox asset set). None are needed to boot or render
+// pages: hyphenation dicts (cosmetic line breaks), spellcheck dicts, and the Remote
+// Agent / CDP+WebDriver (chrome/remote -- dev-tooling, not used at runtime).
+// For pdf.js, keep the small integration modules in chrome/pdfjs/content/*.sys.mjs
+// (PdfjsContextMenu/PdfStreamConverter/PdfJs are eagerly imported -- e.g. by the
+// context-menu actor; dropping all of pdfjs broke right-click) and only drop the
+// heavy viewer UI + engine (content/web ~4.6 MB + content/build ~3 MB). PDF *viewing*
+// is disabled; PDFs download instead. (Excluded chrome.manifest entries remain, so a
+// feature only errors if actually invoked.) Together ~15 MB uncompressed off the tar.
+if (!process.env.CHROME_FULL) {
+  GRE_EXCLUDES.push(
+    '/chrome/pdfjs/content/web', '/chrome/pdfjs/content/build',
+    '/hyphenation', '/dictionaries', '/chrome/remote',
+  );
+}
+
 function serveEngine(): Plugin {
   return {
     name: 'libxul-engine',
