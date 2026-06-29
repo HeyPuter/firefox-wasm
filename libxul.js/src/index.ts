@@ -6,11 +6,12 @@
 // render a web page is baked into gecko.data; anything else (chrome UI, etc.) is
 // supplied by the consumer through an `fs` provider (readFile/readdir).
 
-// gecko.js (emscripten glue) + gecko.worker.js (pthread worker) are inlined into
-// this bundle as source strings and run from Blob URLs, so consumers never serve
-// them -- only gecko.wasm + gecko.data are assets (see GeckoOptions.assetBase).
+// gecko.js (emscripten glue) is inlined into this bundle as a source string and run
+// from a Blob URL, so consumers never serve it -- only gecko.wasm + gecko.data are
+// assets (see GeckoOptions.assetBase). emscripten 6.0.1 no longer emits a separate
+// gecko.worker.js: pthread workers are spawned from the MAIN script (gecko.js) via
+// Module.mainScriptUrlOrBlob (set below), so there is no separate worker source.
 import geckoSource from '../wasm/gecko.js?source';
-import workerSource from '../wasm/gecko.worker.js?source';
 import { ZSTDDecoder } from 'zstddec';
 // gecko.data is baked into this bundle, zstd-compressed (decoded at load with
 // zstddec), so consumers serve only the wasm. gecko-assets.json (also inlined) says
@@ -146,9 +147,7 @@ type GeckoFactory = (opts: Record<string, unknown>) => Promise<GeckoModule>;
 // (asset/source) and run from Blob URLs, so nothing has to be served for them.
 const toBlobUrl = (src: string) => URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
 let _geckoUrl: string | undefined;
-let _workerUrl: string | undefined;
 const geckoBlobUrl = () => (_geckoUrl ??= toBlobUrl(geckoSource));
-const workerBlobUrl = () => (_workerUrl ??= toBlobUrl(workerSource));
 
 let _engine: Promise<GeckoFactory> | undefined;
 function loadEngine(): Promise<GeckoFactory> {
@@ -298,9 +297,11 @@ export class Gecko {
     };
     // The pthread worker loads the (bundled) runtime from this Blob; the wasm reaches
     // workers as a compiled module, so locateFile only resolves assets on the main thread.
+    // emscripten 6.0.1 spawns workers from mainScriptUrlOrBlob (the main gecko.js blob),
+    // not a separate gecko.worker.js; map any stray request for it to the same blob.
     moduleOpts.mainScriptUrlOrBlob = geckoBlobUrl();
     moduleOpts.locateFile = this.opts.locateFile ??
-      ((f: string) => (f === 'gecko.worker.js' ? workerBlobUrl() : assetBase + f));
+      ((f: string) => (f === 'gecko.worker.js' ? geckoBlobUrl() : assetBase + f));
 
     // Decode the inlined gecko.data.zst with zstddec and feed it to emscripten via
     // getPreloadedPackage (so the .data is never fetched). In RELEASE the wasm is
