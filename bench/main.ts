@@ -40,6 +40,7 @@ const OCTANE = path.join(BENCH, 'octane');
 const JETSTREAM = path.join(BENCH, 'jetstream');
 const REALAPP = path.join(BENCH, 'realapp');
 const UBO = path.join(BENCH, 'ubo');
+const MICRO = path.join(BENCH, 'microbenches');
 
 // ---------------------------------------------------------------------------
 // Child mode: load the embed, run the given JS files in one VM, exit.
@@ -201,6 +202,36 @@ function runJetstream(names: string[], f: ReturnType<typeof parseFlags>) {
   }
 }
 
+function runMicro(names: string[], f: ReturnType<typeof parseFlags>) {
+  const all = fs.readdirSync(MICRO).filter((x) => x.endsWith('.js') && x !== 'micro-driver.js').map((x) => x.slice(0, -3)).sort();
+  const list = names.length ? names : all;
+  const prelude = preludeFile(f.iters, f.warm);
+  const driver = path.join(MICRO, 'micro-driver.js');
+  console.log(`# microbenches (perIter ms, lower=better; iters=${f.iters} warm=${f.warm})`
+    + (f.ab ? '  [pbl/jit ratio + sum diff]' : f.pbl ? '  [PBL]' : '  [JIT]'));
+  for (const name of list) {
+    const bench = path.join(MICRO, `${name}.js`);
+    if (!fs.existsSync(bench)) { console.log(pad(name) + 'UNKNOWN'); continue; }
+    const files = [prelude, bench, driver];
+    const doRun = (pbl: boolean) => {
+      const r = runEmbed(files, { env: baseEnv(f, pbl), timeoutS: f.timeoutS });
+      return { per: grab(r.out, /perIter=([\d.]+)/), sum: grab(r.out, /MICROSUM=(-?\d+)/),
+        err: /\bERR=/.test(r.out) ? (grab(r.out, /ERR=(\S+)/) ?? 'err') : (r.code ? `exit${r.code}` : null), raw: r };
+    };
+    if (f.ab) {
+      const j = doRun(false), p = doRun(true);
+      const ratio = j.per && p.per ? (+p.per / +j.per).toFixed(2) + 'x' : 'n/a';
+      const diff = j.sum != null && p.sum != null ? (j.sum === p.sum ? 'OK' : `*** MISMATCH jit=${j.sum} pbl=${p.sum}`) : '?';
+      console.log(pad(name) + `jit=${j.per ?? j.err}ms  pbl=${p.per ?? p.err}ms  => ${ratio}  ${diff}`
+        + (f.bails ? `   bails: ${bailSurvey(j.raw.err)}` : ''));
+    } else {
+      const x = doRun(f.pbl);
+      console.log(pad(name) + (x.per != null ? `${x.per}ms  sum=${x.sum}` : `ERR ${x.err}`)
+        + (f.bails ? `   bails: ${bailSurvey(x.raw.err)}` : ''));
+    }
+  }
+}
+
 function runUbo(f: ReturnType<typeof parseFlags>) {
   const files = [path.join(UBO, 'ubo-run.js')];
   console.log('# ubo (total ms, lower=better)' + (f.ab ? '  [pbl/jit ratio]' : f.pbl ? '  [PBL]' : '  [JIT]'));
@@ -266,16 +297,18 @@ function main() {
   switch (suite) {
     case 'octane': return runOctane(f.rest, f);
     case 'jetstream': case 'js': return runJetstream(f.rest, f);
+    case 'micro': case 'microbenches': return runMicro(f.rest, f);
     case 'ubo': return runUbo(f);
     case 'realapp': return runRealapp(f.rest[0] ?? 'all', f);
     case 'jittest': return runJittest(f.rest, f);
     case 'list':
       console.log('octane:    ' + Object.keys(OCT).join(' '));
       console.log('jetstream: ' + fs.readdirSync(JETSTREAM).filter((x) => x.endsWith('.js') && x !== 'jetstream-driver.js').map((x) => x.slice(0, -3)).join(' '));
+      console.log('micro:     ' + fs.readdirSync(MICRO).filter((x) => x.endsWith('.js') && x !== 'micro-driver.js').map((x) => x.slice(0, -3)).join(' '));
       console.log('realapp:   acorn marked');
       return;
     default:
-      console.error('usage: node bench/main.ts <octane|jetstream|ubo|realapp|jittest|list> [names...] [--pbl|--ab|--bails|--iters N|--warm N|--gczeal N|--nursery-mb N]');
+      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|jittest|list> [names...] [--pbl|--ab|--bails|--iters N|--warm N|--gczeal N|--nursery-mb N]');
       process.exit(2);
   }
 }

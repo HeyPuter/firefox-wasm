@@ -18,9 +18,21 @@ bench/
   octane/                 Octane base.js + bench files + octane-driver.js
   jetstream/              JetStream2 bench files + jetstream-driver.js
   realapp/                acorn / marked libs + bench harnesses (real-app diff)
-  ubo/                    ubo-run.js (uBlock filter-compile; reads ../ubo-bench)
+  ubo/                    ubo-run.js + build/ + data/ (self-contained uBlock filter-compile)
+  microbenches/           focused JIT-path probes (one codegen path each) + micro-driver.js
   main.ts                 the unified runner (orchestrator + __exec child mode)
 ```
+
+### microbenches/
+Small single-purpose benches that each isolate ONE JIT codegen path, in the same
+`class Benchmark { setup?(); runIteration(); result() }` shape as JetStream. `result()`
+returns a checksum so `micro --ab` DIFFs the JIT-vs-PBL result for correctness (no
+fragile hardcoded constants) alongside the perf ratio + bail survey: `prop-mono`
+(fixed-slot IC), `prop-poly` (shape-list IC), `array-dense` (StoreElementHole/bounds),
+`int-arith` (fallible overflow), `float-arith` (unboxed double), `mathfn` (Math.* /
+MMathFunction), `call-poly` (call IC), `alloc` (inline nursery alloc), `string-ops`
+(charCodeAt/rope/compare), `try-catch` (deopt-in-error). Add one by dropping a
+`Benchmark`-class file in.
 
 ## Build
 ```
@@ -36,6 +48,8 @@ node bench/main.ts octane                       # default octane set, JIT
 node bench/main.ts octane richards splay --ab   # JIT vs PBL ratio, specific benches
 node bench/main.ts jetstream --ab --bails       # JetStream2 + per-op bail survey
 node bench/main.ts jetstream cdjs --iters 20     # one bench, 20 timed iters
+node bench/main.ts micro --ab --bails            # JIT-path probes: ratio + sum-diff + bails
+node bench/main.ts micro mathfn float-arith       # specific probes
 node bench/main.ts ubo --ab                      # uBlock filter-compile (cwd=repo root)
 node bench/main.ts realapp acorn                 # parse acorn, DIFF jit-vs-pbl result
 node bench/main.ts list                          # known bench names
