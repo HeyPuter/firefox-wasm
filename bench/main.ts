@@ -42,6 +42,7 @@ const REALAPP = path.join(BENCH, 'realapp');
 const UBO = path.join(BENCH, 'ubo');
 const MICRO = path.join(BENCH, 'microbenches');
 const DISAS = path.join(BENCH, 'disas');
+const WASMDIR = path.join(BENCH, 'wasm');
 const EMSDK = process.env.EMSDK || '/home/claude/emsdk';
 const WASM_DIS = [path.join(EMSDK, 'upstream', 'bin', 'wasm-dis'), 'wasm-dis']
   .find((p) => p === 'wasm-dis' || fs.existsSync(p)) ?? 'wasm-dis';
@@ -299,6 +300,30 @@ function runRealapp(which: string, f: ReturnType<typeof parseFlags>) {
   }
 }
 
+// In-process wasm interpreter (GECKO_WASM_INTERP) test suite. Each bench/wasm/*.cjs is a
+// standalone node harness that builds wasm (wat2wasm/wasm-as, emcc, rustc) and runs it
+// through the embed; it self-reports and exits nonzero on failure.
+function runWasm(names: string[], f: ReturnType<typeof parseFlags>) {
+  const all = ['difftest', 'atomictest', 'tramptest', 'emtest', 'rusttest'];
+  const list = names.length ? names : all;
+  const env = { ...process.env, EMSDK, EM_CONFIG: path.join(ROOT, 'em_config') };
+  console.log('# wasm interpreter tests (GECKO_WASM_INTERP)');
+  let pass = 0, fail = 0;
+  for (const n of list) {
+    const file = path.join(WASMDIR, `${n}.cjs`);
+    if (!fs.existsSync(file)) { console.log(pad(n) + 'UNKNOWN'); continue; }
+    const r = spawnSync(process.execPath, [file], { encoding: 'utf8', env, cwd: ROOT,
+      timeout: Math.max(f.timeoutS, 300) * 1000, maxBuffer: 64 * 1024 * 1024 });
+    const out = (r.stdout ?? '') + (r.stderr ?? '');
+    const summary = (out.match(/(\d+\/\d+[^\n]*passed)/) || out.match(/\b(SKIP[^\n]*)/) || [, ''])[1];
+    const ok = r.status === 0;
+    console.log(pad(n) + (ok ? 'ok' : 'FAIL') + (summary ? `  ${summary}` : ''));
+    if (ok) pass++; else { fail++; if (f.bails) console.log(out.split('\n').slice(-8).map((l) => '    ' + l).join('\n')); }
+  }
+  console.log(`# ${pass} ok, ${fail} failed`);
+  if (fail) process.exit(1);
+}
+
 const JITTEST = path.join(BENCH, 'jittest');
 function runJittest(rest: string[], f: ReturnType<typeof parseFlags>) {
   // Run SpiderMonkey's own jit-test suite against the wasm embed: jit_test.py drives
@@ -416,16 +441,18 @@ function main() {
     case 'realapp': return runRealapp(f.rest[0] ?? 'all', f);
     case 'disas': return runDisas(f.rest, f);
     case 'disastest': return runDisasTest(f.rest, f);
+    case 'wasm': return runWasm(f.rest, f);
     case 'jittest': return runJittest(f.rest, f);
     case 'list':
       console.log('octane:    ' + Object.keys(OCT).join(' '));
       console.log('jetstream: ' + fs.readdirSync(JETSTREAM).filter((x) => x.endsWith('.js') && x !== 'jetstream-driver.js').map((x) => x.slice(0, -3)).join(' '));
       console.log('micro:     ' + fs.readdirSync(MICRO).filter((x) => x.endsWith('.js') && x !== 'micro-driver.js').map((x) => x.slice(0, -3)).join(' '));
       console.log('disastest: ' + (fs.existsSync(DISAS) ? fs.readdirSync(DISAS).filter((x) => x.endsWith('.js')).map((x) => x.slice(0, -3)).join(' ') : ''));
+      console.log('wasm:      difftest atomictest tramptest emtest rusttest');
       console.log('realapp:   acorn marked');
       return;
     default:
-      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|disas|disastest|jittest|list> [names...] [flags]\n'
+      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|disas|disastest|wasm|jittest|list> [names...] [flags]\n'
         + '  disas <file.js> --fn NAME [--grep RE]   show the WAT the JIT emitted for a function\n'
         + '  disastest [names]                       run bench/disas/*.js codegen CHECK tests\n'
         + '  flags: --pbl --ab --bails --iters N --warm N --gczeal N --nursery-mb N --timeout S');

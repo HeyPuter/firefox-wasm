@@ -32,8 +32,14 @@ const wat = `(module
   (func (export "add8u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.atomic.rmw8.add_u)
   (func (export "fence") atomic.fence))`;
 fs.writeFileSync(path.join(TMP, "a.wat"), wat);
-execFileSync("wat2wasm", [path.join(TMP, "a.wat"), "--enable-threads",
-  "-o", path.join(TMP, "a.wasm")]);
+// wabt wat2wasm if present, else binaryen wasm-as (from emsdk); both need threads on.
+const ASM = (() => {
+  try { execFileSync("wat2wasm", ["--version"], { stdio: "ignore" });
+        return { bin: "wat2wasm", feats: ["--enable-threads"] }; }
+  catch { return { bin: path.join(process.env.EMSDK || "/home/claude/emsdk", "upstream", "bin", "wasm-as"),
+                   feats: ["-all"] }; }
+})();
+execFileSync(ASM.bin, [path.join(TMP, "a.wat"), ...ASM.feats, "-o", path.join(TMP, "a.wasm")]);
 const wb = fs.readFileSync(path.join(TMP, "a.wasm"));
 
 const sp = path.join(TMP, "run.js");
@@ -69,7 +75,7 @@ print("fails="+fails);
 
 const env = Object.assign({}, process.env, { GECKO_WASM_INTERP: "1" });
 try {
-  const out = execFileSync("node", [path.join(ROOT, "embed-js", "run.cjs"), sp], { env, encoding: "utf8" });
+  const out = execFileSync("node", [path.join(ROOT, "bench", "main.ts"), "__exec", sp], { env, encoding: "utf8" });
   process.stdout.write(out);
 } catch (e) {
   process.stdout.write("[stdout]\n" + (e.stdout || "") + "\n[stderr]\n" + (e.stderr || ""));

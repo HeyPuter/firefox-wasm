@@ -22,8 +22,26 @@ bench/
   microbenches/           focused JIT-path probes (one codegen path each) + micro-driver.js
   disas/                  codegen CHECK tests (FileCheck-style WAT assertions)
   jittest/                jsshell wrapper + exclude list for SpiderMonkey's jit-test suite
+  wasm/                   in-process wasm-interpreter (GECKO_WASM_INTERP) test suite
   main.ts                 the unified runner (orchestrator + __exec child mode)
 ```
+
+### wasm interpreter tests
+`node bench/main.ts wasm [names...]` runs the in-process wasm-interpreter
+(`GECKO_WASM_INTERP`) suite — each `bench/wasm/*.cjs` builds wasm and runs it through
+the embed, self-reporting + exiting nonzero on failure:
+- `difftest` — 19 hand-written .wat modules (arith/loops/mem/i64/float/bulk/simd/…),
+  run under the interpreter vs host passthrough, checked against expected values;
+- `atomictest` — the full atomic opcode set (load/store/rmw/cmpxchg/fence);
+- `tramptest` — emscripten `addFunction`/`convertJsFunctionToWasm` trampolines via
+  `call_indirect` (incl. callbacks that re-enter wasm);
+- `emtest` — a real C program compiled with `emcc` (malloc/call_indirect/ctors);
+- `rusttest` — a real Rust→wasm module (auto-builds via `rustc`; SKIPs if the
+  `wasm32-unknown-unknown` target isn't installed);
+- `geckodecode.js` — manual: decode the full 247MB `gecko.wasm` at engine scale.
+
+`.wat`→`.wasm` uses `wat2wasm` if installed, else binaryen's `wasm-as` (ships with the
+emsdk). Honors `EMSDK`.
 
 ### jit-test suite (SpiderMonkey's own correctness tests)
 `node bench/main.ts jittest [filters...]` runs the in-tree `js/src/jit-test` suite

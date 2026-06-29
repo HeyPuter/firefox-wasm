@@ -10,7 +10,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..", "..");
-const EMSDK = path.join(ROOT, "emsdk");
+const EMSDK = process.env.EMSDK || "/home/claude/emsdk";
 const EMCC = path.join(EMSDK, "upstream", "emscripten", "emcc");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "emtest-"));
 
@@ -57,7 +57,7 @@ print("compute500="+em.exports.compute(500));`);
 
 const env = Object.assign({}, process.env, { EMSDK, GECKO_WASM_INTERP: "1" });
 let out = "";
-try { out = execFileSync("node", [path.join(ROOT, "embed-js", "run.cjs"), sp], { env, encoding: "utf8" }); }
+try { out = execFileSync("node", [path.join(ROOT, "bench", "main.ts"), "__exec", sp], { env, encoding: "utf8" }); }
 catch (e) { out = (e.stdout || "").toString(); console.error(e.stderr || ""); }
 const map = {};
 for (const l of out.split("\n")) { const m = l.match(/^(\w+)=(.*)$/); if (m) map[m[1]] = m[2]; }

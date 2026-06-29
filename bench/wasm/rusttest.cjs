@@ -8,7 +8,20 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..", "..");
-const wasm = fs.readFileSync("/tmp/rusttest.wasm");
+// Build rust/rusttest.rs -> /tmp/rusttest.wasm if absent (needs the wasm32 target:
+// `rustup target add wasm32-unknown-unknown`). Skip cleanly if rustc/target missing.
+const WASM_PATH = "/tmp/rusttest.wasm";
+if (!fs.existsSync(WASM_PATH)) {
+  try {
+    execFileSync("rustc", ["--target", "wasm32-unknown-unknown", "-O", "--crate-type=cdylib",
+      path.join(__dirname, "rust", "rusttest.rs"), "-o", WASM_PATH], { stdio: "inherit" });
+  } catch (e) {
+    console.log("SKIP rusttest: cannot build " + WASM_PATH +
+      " (need `rustup target add wasm32-unknown-unknown`): " + (e.message || e));
+    process.exit(0);
+  }
+}
+const wasm = fs.readFileSync(WASM_PATH);
 const arr = Array.from(wasm);
 
 // Reference implementations (must match rusttest.rs).
@@ -45,7 +58,7 @@ fs.writeFileSync(sp, script);
 
 const env = Object.assign({}, process.env, { EMSDK: path.join(ROOT, "emsdk"), GECKO_WASM_INTERP: "1" });
 let out = "";
-try { out = execFileSync("node", [path.join(ROOT, "embed-js", "run.cjs"), sp], { env, encoding: "utf8" }); }
+try { out = execFileSync("node", [path.join(ROOT, "bench", "main.ts"), "__exec", sp], { env, encoding: "utf8" }); }
 catch (e) { out = (e.stdout || "").toString(); console.error(e.stderr || ""); }
 
 const map = {};

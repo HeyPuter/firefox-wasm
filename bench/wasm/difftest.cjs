@@ -14,11 +14,21 @@ const { execFileSync } = require("child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "wasmtest-"));
 
+// Prefer wabt's wat2wasm; fall back to binaryen's wasm-as (same `in.wat -o out.wasm`
+// CLI), which ships with the emsdk. Enable all post-MVP features either way so the
+// tests can use bulk-memory / sign-ext / threads / simd (-all for binaryen, the
+// --enable-* set for wabt).
+const ASM = (() => {
+  try { execFileSync("wat2wasm", ["--version"], { stdio: "ignore" });
+        return { bin: "wat2wasm", feats: ["--enable-all"] }; }
+  catch { return { bin: path.join(process.env.EMSDK || "/home/claude/emsdk", "upstream", "bin", "wasm-as"),
+                   feats: ["-all"] }; }
+})();
 function wat2wasm(name, wat) {
   const watPath = path.join(TMP, name + ".wat");
   const wasmPath = path.join(TMP, name + ".wasm");
   fs.writeFileSync(watPath, wat);
-  execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
+  execFileSync(ASM.bin, [watPath, ...ASM.feats, "-o", wasmPath]);
   return Array.from(fs.readFileSync(wasmPath));
 }
 
@@ -177,11 +187,11 @@ const scriptPath = path.join(TMP, "all.js");
 fs.writeFileSync(scriptPath, script);
 
 function runMode(interp) {
-  const env = Object.assign({}, process.env, { EMSDK: path.join(ROOT, "emsdk") });
+  const env = Object.assign({}, process.env, { EMSDK: process.env.EMSDK || "/home/claude/emsdk" });
   if (interp) env.GECKO_WASM_INTERP = "1"; else delete env.GECKO_WASM_INTERP;
   let out = "";
   try {
-    out = execFileSync("node", [path.join(ROOT, "embed-js", "run.cjs"), scriptPath],
+    out = execFileSync("node", [path.join(ROOT, "bench", "main.ts"), "__exec", scriptPath],
       { env, encoding: "utf8" });
   } catch (e) {
     out = (e.stdout || "").toString();  // capture partial output (passthrough aborts)

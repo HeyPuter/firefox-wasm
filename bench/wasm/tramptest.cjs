@@ -12,6 +12,14 @@ const { execFileSync } = require("child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tramp-"));
 
+// wabt wat2wasm if present, else binaryen wasm-as (from emsdk).
+const ASM = (() => {
+  try { execFileSync("wat2wasm", ["--version"], { stdio: "ignore" });
+        return { bin: "wat2wasm", feats: ["--enable-all"] }; }
+  catch { return { bin: path.join(process.env.EMSDK || "/home/claude/emsdk", "upstream", "bin", "wasm-as"),
+                   feats: ["-all"] }; }
+})();
+
 // emscripten convertJsFunctionToWasm module-build fallback (verbatim).
 function tramp(sig) {
   var typeSection = [1, 0, 1, 96];
@@ -56,7 +64,7 @@ function moduleB(sig) {
     ${dropRet}))`;
   const wp = path.join(TMP, "b.wat"), op = path.join(TMP, "b.wasm");
   fs.writeFileSync(wp, wat);
-  execFileSync("wat2wasm", [wp, "-o", op]);
+  execFileSync(ASM.bin, [wp, ...ASM.feats, "-o", op]);
   return fs.readFileSync(op);
 }
 
@@ -106,9 +114,14 @@ const sp = path.join(TMP, "run.js");
 fs.writeFileSync(sp, script);
 const env = Object.assign({}, process.env, { GECKO_WASM_INTERP: "1" });
 try {
-  const out = execFileSync("node", [path.join(ROOT, "embed-js", "run.cjs"), sp], { env, encoding: "utf8" });
+  const out = execFileSync("node", [path.join(ROOT, "bench", "main.ts"), "__exec", sp], { env, encoding: "utf8" });
   process.stdout.write(out);
+  const m = out.match(/fails=(\d+)/);
+  const fails = m ? +m[1] : 1;
+  console.log(`${CASES.length - fails}/${CASES.length} trampoline cases passed`);
+  process.exit(fails ? 1 : 0);
 } catch (e) {
   process.stdout.write("[stdout]\n" + (e.stdout || ""));
   process.stdout.write("[stderr]\n" + (e.stderr || ""));
+  process.exit(1);
 }

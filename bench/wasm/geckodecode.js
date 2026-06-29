@@ -1,7 +1,10 @@
 // Decode (and try to instantiate) the real 247MB / 362K-function gecko.wasm in
 // the interpreter. Validates lazy decode + shared-memory + atomics acceptance at
-// engine scale. Run: GECKO_WASM_INTERP=1 node embed-js/run.cjs embed-js/wasmtests/geckodecode.js
-var PATH = "/home/velzie/src/gecko-wasm/gecko.js/dist/gecko.wasm";
+// engine scale. Needs a built gecko.wasm (make libxul). Run from the repo root:
+//   GECKO_WASM_INTERP=1 node bench/main.ts __exec bench/wasm/geckodecode.js
+// (edit PATH below, or set globalThis.GECKO_WASM in a prelude, to point elsewhere.)
+var PATH = (typeof globalThis.GECKO_WASM !== "undefined") ? globalThis.GECKO_WASM
+         : "gecko.js/dist/gecko.wasm";
 var t0 = Date.now();
 var buf = readWasm(PATH);
 print("read " + buf.byteLength + " bytes in " + (Date.now() - t0) + "ms");
