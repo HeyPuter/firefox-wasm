@@ -200,7 +200,7 @@ jobs:
         run: |
           export GECKO_OBJDIR="${{ github.workspace }}/obj-full-emscripten-release"
           pnpm --filter chrome-demo build
-          tar -C chrome-demo -czf chrome-demo-${{ github.ref_name }}.tar.gz dist
+          tar -C demo/chrome -czf chrome-demo-${{ github.ref_name }}.tar.gz dist
           ls -la chrome-demo-*.tar.gz
 
       - name: Upload chrome-demo artifact (always)

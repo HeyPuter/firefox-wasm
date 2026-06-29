@@ -24,8 +24,8 @@ const mime = (n: string) =>
 // $GECKO_OBJDIR so a RELEASE build (CI: obj-full-emscripten-release) can point here.
 const GRE_SRC = process.env.GECKO_OBJDIR
   ? path.resolve(process.env.GECKO_OBJDIR, 'dist/bin')
-  : path.resolve(__dirname, '../obj-full-emscripten/dist/bin');
-const FONT_SRC = path.resolve(__dirname, '../firefox/toolkit/components/pdfjs/content/web/standard_fonts');
+  : path.resolve(__dirname, '../../obj-full-emscripten/dist/bin');
+const FONT_SRC = path.resolve(__dirname, '../../firefox/toolkit/components/pdfjs/content/web/standard_fonts');
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 const ASSET_ARCHIVE = path.join(PUBLIC_DIR, 'chrome-assets.tar.zst');
 const ASSET_MANIFEST = path.join(PUBLIC_DIR, 'chrome-assets.json');

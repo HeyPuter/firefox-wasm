@@ -24,7 +24,7 @@ Mozilla's Gecko engine (Firefox/SpiderMonkey) ported to browser **WebAssembly**
 (Portable Baseline Interpreter), WISP networking, rendering web content to a
 `<canvas>`. `firefox/` is a fork of `mozilla-firefox/firefox` carrying the
 in-tree port patches; **`gecko.js/`** is the embeddable package (the engine
-artifacts + an ESM API), consumed by the `embed-demo/` and `chrome-demo/` Vite
+artifacts + an ESM API), consumed by the `demo/embed/` and `demo/chrome/` Vite
 demos. (The old `embed-xul/` + `embed-chrome/` stub dirs have been removed.)
 
 ---

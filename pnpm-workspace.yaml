@@ -1,4 +1,4 @@
 packages:
   - gecko.js
-  - embed-demo
-  - chrome-demo
+  - demo/embed
+  - demo/chrome
