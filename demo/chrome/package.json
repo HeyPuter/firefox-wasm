@@ -1,0 +1,19 @@
+{
+  "name": "chrome-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "gecko.js": "workspace:*",
+    "zstddec": "^0.2.0"
+  },
+  "devDependencies": {
+    "@mercuryworkshop/wisp-js": "^0.4.1",
+    "vite": "^5.4.0"
+  }
+}

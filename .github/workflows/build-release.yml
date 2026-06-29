@@ -1,23 +1,27 @@
 name: build-and-release
 
-# Builds the full Gecko->wasm engine and the libxul.js package, then attaches the
-# packaged library (dist/libxul.js + dist/gecko.wasm + the wasm/ engine artifacts)
+# Builds the full Gecko->wasm engine and the gecko.js package, then attaches the
+# packaged library (dist/gecko.js + dist/gecko.wasm + the wasm/ engine artifacts)
 # to a GitHub Release. (embed-xul/ + embed-chrome/ are legacy stubs and are NOT built
-# here -- the maintained package is libxul.js/.)
+# here -- the maintained package is gecko.js/.)
 #
 # !!! HEAVY BUILD — READ FIRST !!!
 # A full Gecko->wasm build is enormous: ~26 GB objdir, a ~3.4 GB (relocatable) libxul.so,
 # a ~245 MB gecko.wasm, and 25-50 min on 12 cores. On a standard hosted runner
 # (4 vCPU / 16 GB RAM / ~14 GB free disk) this is marginal on ALL THREE axes:
 #   - disk: we free ~30 GB below; still tight. Prefer a larger/self-hosted runner.
-#   - ram:  the final emcc relink (wasm-opt over the 245 MB module) + engine LTO link
-#           spike past 16 GB and OOM-kill, so we add a 32 GB swapfile on /mnt below.
+#   - ram:  the final emcc relink (wasm-opt over the 245 MB module) spikes hard, so we
+#           add a best-effort swapfile below. Engine LTO is OFF by default: the libxul
+#           LTO link needs >54 GiB (it OOM-killed an 8-core/31 GiB runner even with
+#           ThinLTO + a --thinlto-jobs cap + 23 GiB swap). Re-enable only on a ~64 GiB+
+#           host with `make ... LTO=1` (see mozconfig + Makefile LTO knob).
 #   - time: on 4 vCPU expect ~2-4 h (job cap is 6 h).
 # If it doesn't fit, switch `runs-on` to a larger runner (e.g. a self-hosted one
 # or GitHub larger runners) — the steps are otherwise unchanged.
 #
 # This workflow is a STARTING POINT; the local upgrade to emscripten 6.0.1 was
-# verified with a DEBUG build (the RELEASE/LTO path here is not yet CI-verified).
+# verified with a DEBUG build. The RELEASE path here runs optimized + wasm-opt but
+# WITHOUT engine LTO (LTO doesn't fit this runner — see above).
 
 on:
   push:
@@ -55,10 +59,27 @@ jobs:
       - name: Install build prerequisites (clang/libclang for bindgen, etc.)
         run: |
           sudo apt-get update
+          # Host toolchain + misc build deps. `clang`/`clang++` here only serve
+          # mozconfig's HOST_CC/HOST_CXX (host-side codegen tools) -- their version
+          # is irrelevant. The bindgen libclang is installed separately below.
           sudo apt-get install -y --no-install-recommends \
-            clang llvm-dev libclang-dev libpulse-dev python3 mercurial unzip zstd
+            clang llvm-dev libpulse-dev python3 mercurial unzip zstd rsync \
+            wget lsb-release gnupg software-properties-common
+          # bindgen (gecko-profiler + other rust crates) parses emscripten 6.0.1's
+          # libc++ headers, which are LLVM 23 and use clang>=19 builtins: __is_convertible
+          # (older clang errors "'_Tp' does not refer to a value") and __builtin_ctzg/
+          # __builtin_clzg ("use of undeclared identifier"). Ubuntu's stock libclang is
+          # 18 -- too old -- so bindgen fails with "Unable to generate bindings" and the
+          # whole engine build dies at force-cargo-library-build long before libxul links.
+          # Install a matching-era libclang (21, same as mach-bootstrap's clang, which is
+          # what works locally) from apt.llvm.org and point bindgen at it via LIBCLANG_PATH.
+          LLVM_VER=21
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${LLVM_VER}
+          sudo apt-get install -y --no-install-recommends libclang-${LLVM_VER}-dev
           # mozconfig.full.emscripten reads $LIBCLANG_PATH for --with-libclang-path.
-          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-${LLVM_VER}/lib" >> "$GITHUB_ENV"
 
       # Install emscripten from a FRESH emsdk clone (its bundled tags know 6.0.x; an
       # older/cached emsdk may not). em_config reads $EMSDK and resolves binaryen at
@@ -82,7 +103,7 @@ jobs:
           components: rust-src
           targets: wasm32-unknown-emscripten
 
-      # libxul.js's package build (rspack bundle) runs under pnpm; the repo pins
+      # gecko.js's package build (rspack bundle) runs under pnpm; the repo pins
       # pnpm via package.json "packageManager", so let corepack provide it.
       - name: Set up Node + pnpm ${{ env.PNPM_VERSION }}
         uses: actions/setup-node@v4
@@ -100,59 +121,100 @@ jobs:
       - name: Clone the pinned Gecko engine fork (depth 1)
         run: make firefox
 
+      # Memory headroom safety net. Engine LTO is OFF by default (it needs >54 GiB and
+      # OOM-killed this 8-core/~31 GiB runner), so the big remaining spike is wasm-opt
+      # -O3 over the ~250 MB module at the final relink. Adding swap lets a peak above
+      # RAM spill instead of getting OOM-killed (SIGTERM / exit 143). Fully best-effort
+      # -- never fails the job (a runner may already have swap, lack disk, or forbid swapon).
+      - name: Add swap headroom (best-effort)
+        run: |
+          if swapon --show 2>/dev/null | grep -q .; then
+            echo ">> swap already present:"; swapon --show; free -h; exit 0
+          fi
+          SW=/swapfile
+          ( sudo fallocate -l 24G "$SW" || sudo dd if=/dev/zero of="$SW" bs=1M count=24576 ) 2>/dev/null \
+            && sudo chmod 600 "$SW" && sudo mkswap "$SW" >/dev/null 2>&1 && sudo swapon "$SW" 2>/dev/null \
+            && echo ">> added 24G swap at $SW" || echo "!! could not add swap (continuing without it)"
+          free -h || true
+
       # No path rewriting needed: mozconfig.full.emscripten derives its objdir and
       # FreeType include from $topsrcdir, and libclang from $LIBCLANG_PATH (set above).
 
-      - name: "Build the engine + libxul.js (release: LTO + zstd; wasm-opt TEMPORARILY disabled) — long"
-        env:
-          NO_WASM_OPT: '1'   # TEMP: skip the whole-module wasm-opt pass (OOMs/SIGSEGVs in CI); remove to re-enable
+      - name: "Build the engine + gecko.js (release: zstd + wasm-opt, no engine LTO) — long"
         run: |
           # wasm-opt's recursive passes overflow the default 8MB stack on the
           # ~250MB module and die with SIGSEGV. Raise the stack limit for the whole
           # make -> mach -> em++ -> wasm-opt subprocess tree (ulimit is inherited).
           # Also needed for the libxul.so relink: emscripten 6.0.1's wasm-ld SIGSEGVs
           # on the `-shared` link, so `make build` relinks the engine libs as `-r`
-          # relocatable objects (libxul.js/build/relink-engine-r.sh, run between two
+          # relocatable objects (gecko.js/relink-engine-r.sh, run between two
           # `mach build` passes) -- handled inside `make`, no extra step here.
+          # Engine LTO is intentionally OFF (LTO=1 would need a ~64 GiB+ runner; this one
+          # OOM-kills the LTO link). RELEASE still gives -O3 + wasm-opt over the module.
           ulimit -s unlimited || ulimit -s 524288 || true
           make libxul RELEASE=1   # firefox cloned; vendor -> mach build (+relink) -> build-lib.sh -> rspack
 
       - name: Show link errors on failure
         if: failure()
         run: |
-          echo "=== libxul.js/build/link.err (tail) ==="
-          tail -n 60 libxul.js/build/link.err 2>/dev/null || echo "(no link.err)"
+          echo "=== gecko.js/build/link.err (tail) ==="
+          tail -n 60 gecko.js/build/link.err 2>/dev/null || echo "(no link.err)"
 
-      - name: Package the libxul.js library (the runnable ESM bundle)
+      - name: Package the gecko.js library (the runnable ESM bundle)
         run: |
-          PKG=stage/libxul.js
+          PKG=stage/gecko.js
           mkdir -p "$PKG"
           # The runnable/publishable artifact is dist/ (the ESM bundle + the single
           # served gecko.wasm[.zst]) + package.json. The wasm/ dir is build intermediates
-          # -- gecko.js/worker.js/gecko.data are INLINED into dist/libxul.js, so only
+          # -- gecko.js/worker.js/gecko.data are INLINED into dist/gecko.js, so only
           # dist/gecko.wasm[.zst] is served separately; no need to ship wasm/.
-          cp -r libxul.js/dist libxul.js/package.json "$PKG/"
-          cp libxul.js/README.md "$PKG/" 2>/dev/null || true
+          cp -r gecko.js/dist gecko.js/package.json "$PKG/"
+          cp gecko.js/README.md "$PKG/" 2>/dev/null || true
           cat > "$PKG/RELEASE.txt" <<'TXT'
-          libxul.js — embeddable Gecko (the Firefox engine) compiled to WebAssembly (emscripten 6.0.1).
-          The ESM bundle (dist/libxul.js) inlines the glue + gecko.data; consumers serve only the wasm
+          gecko.js — embeddable Gecko (the Firefox engine) compiled to WebAssembly (emscripten 6.0.1).
+          The ESM bundle (dist/gecko.js) inlines the glue + gecko.data; consumers serve only the wasm
           (dist/gecko.wasm or, in this release build, dist/gecko.wasm.zst — decompressed in-browser).
           Must be served cross-origin-isolated (COOP: same-origin + COEP: require-corp) for SharedArrayBuffer.
           See README / the embed-demo for usage: `new Gecko({ canvas, wispUrl }); await g.init(); g.load(url)`.
           TXT
-          tar -C stage -czf libxul.js-${{ github.ref_name }}.tar.gz libxul.js
-          ls -la libxul.js-*.tar.gz
+          tar -C stage -czf gecko.js-${{ github.ref_name }}.tar.gz gecko.js
+          ls -la gecko.js-*.tar.gz
 
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: libxul.js-${{ github.ref_name }}
-          path: libxul.js-*.tar.gz
+          name: gecko.js-${{ github.ref_name }}
+          path: gecko.js-*.tar.gz
+          if-no-files-found: error
+
+      # Build the chrome-demo as a static Vite site (the full Firefox front-end demo).
+      # Runs AFTER the gecko.js artifact upload so that primary artifact is published
+      # even if the demo build trips. The demo's vite config stages the GRE resource set
+      # from the engine objdir via rsync into public/chrome-assets.tar.zst and emits the
+      # served gecko.wasm[.zst]; GECKO_OBJDIR points it at the RELEASE objdir (its default
+      # is the local debug objdir). gecko.js (workspace dep) + node_modules already exist
+      # from `make libxul` above. NOTE: chrome-demo/dist is a static site that still must
+      # be served cross-origin-isolated (COOP/COEP) WITH a WISP proxy at /wisp (the demo's
+      # dev/preview server provides both; a plain static host does not).
+      - name: Build the chrome-demo (static Vite build)
+        run: |
+          export GECKO_OBJDIR="${{ github.workspace }}/obj-full-emscripten-release"
+          pnpm --filter chrome-demo build
+          tar -C demo/chrome -czf chrome-demo-${{ github.ref_name }}.tar.gz dist
+          ls -la chrome-demo-*.tar.gz
+
+      - name: Upload chrome-demo artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-demo-${{ github.ref_name }}
+          path: chrome-demo-*.tar.gz
           if-no-files-found: error
 
       - name: Publish GitHub Release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: libxul.js-*.tar.gz
+          files: |
+            gecko.js-*.tar.gz
+            chrome-demo-*.tar.gz
           generate_release_notes: true

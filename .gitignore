@@ -25,7 +25,7 @@ gecko-assets.json
 
 # --- emscripten JS glue (emitted next to the .wasm above) ---
 *.worker.js
-gecko.js
+# gecko.js
 gltest.js
 socktest.js
 /web/sm.js

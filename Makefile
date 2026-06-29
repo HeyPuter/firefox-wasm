@@ -4,47 +4,63 @@
 #   make vendor     vendor the Rust std deps for -Z build-std (vendor-std-deps.py)
 #   make build      build the engine -> obj-full-emscripten/dist/bin/libxul.so (+ -r relink)
 #   make configure  force a reconfigure (needed after changing configure inputs outside CONFIGURE_INPUTS, e.g. re-checked-out firefox/)
-#   make libxul     build the libxul.js package: engine artifacts + the rspack ESM bundle (default)
+#   make libxul     build the gecko.js package: engine artifacts + the rspack ESM bundle (default)
 #   make embed-demo / make chrome-demo   build the library, then run its Vite demo
 #   make run        alias for embed-demo (build + serve the basic embed demo)
 #   make web        alias for libxul (back-compat)
-#   make clean      remove the libxul.js build outputs
+#   make clean      remove the gecko.js build outputs
 #   make distclean  also remove the objdir and the firefox/ checkout
 #
-# The runnable build is the libxul.js package + its Vite demos (embed-demo /
+# The runnable build is the gecko.js package + its Vite demos (embed-demo /
 # chrome-demo); the old embed-xul/ + embed-chrome/ stub dirs have been removed.
 # Prereqs are not installed here (see README.md): emsdk (emscripten 6.0.1; bundles
 # binaryen v130), rust 1.95 + rust-src + the wasm32-unknown-emscripten target,
-# python3, and node + pnpm (for the libxul.js bundle). The build env vars below
+# python3, and node + pnpm (for the gecko.js bundle). The build env vars below
 # default sensibly but honor the environment (?=), so CI can override e.g.
 # MOZBUILD_STATE_PATH / EM_BINARYEN_ROOT / EMSDK.
 
 ROOT        := $(CURDIR)
 FIREFOX_URL := https://github.com/MercuryWorkshop/firefox.git
-FIREFOX_REF := e67c6ef55fa342b78ec14824cbef56c4a42f641e
+FIREFOX_REF := e874c4dd3a028d8ba7496310208187f43d7e8d18
 
 # Pinned, repo-local emscripten. `make emsdk` clones the emsdk meta-repo here,
 # installs + activates this version, and applies the WasmFS WISP-socket patches
 # so WASMFS=1 builds keep working TCP sockets (patch-emsdk-wasmfs.mjs +
-# emsdk-patches/wisp_socket.h). The whole build (engine + libxul.js relink) runs
+# emsdk-patches/wisp_socket.h). The whole build (engine + gecko.js relink) runs
 # against $(EMSDK), exported below. Override EMSDK to reuse an existing install
 # (then run `make emsdk` once to patch it -- the patch is idempotent).
 EMSDK          ?= $(ROOT)/emsdk
 EMSDK_VERSION  ?= 6.0.1
 EMSDK_STAMP    := $(EMSDK)/.wisp-patched
-WISP_PATCH_SRC := libxul.js/build/patch-emsdk-wasmfs.mjs libxul.js/build/emsdk-patches/wisp_socket.h
+WISP_PATCH_SRC := gecko.js/patch-emsdk-wasmfs.mjs gecko.js/emsdk-patches/wisp_socket.h
 
 EM_CONFIG           ?= $(ROOT)/em_config
 MOZCONFIG           ?= $(ROOT)/mozconfig.full.emscripten
 MOZBUILD_STATE_PATH ?= $(HOME)/.mozbuild
-# RELEASE=1 turns on optimizations: --enable-lto for the engine (mozconfig) and
-# -O3 at the emcc relink so wasm-opt's passes run over the final module.
+# RELEASE=1 turns on optimizations: -O3 at the emcc relink so wasm-opt's passes run
+# over the final module (and -O3 engine codegen). NOTE: RELEASE does NOT enable engine
+# LTO -- that's the separate LTO knob below.
 RELEASE             ?=
+# LTO=1 enables cross-module ThinLTO for the engine (mozconfig reads GECKO_LTO). It is
+# independent of RELEASE because the libxul LTO link needs a big-RAM host (>54 GiB) --
+# the standard CI runner OOM-kills it. Only set LTO=1 on a ~64 GiB+ machine. Off by
+# default so RELEASE builds are reliable (optimized + wasm-opt, just no engine LTO).
+LTO                 ?=
 export EM_CONFIG MOZCONFIG MOZBUILD_STATE_PATH EMSDK
 export GECKO_RELEASE := $(RELEASE)
+export GECKO_LTO := $(LTO)
+# Pin the build timestamp for the whole build. The `build` target runs `mach build` TWICE
+# with the libxul `-r` relink in between (see that recipe). mach regenerates buildid.cpp
+# from the current time on each pass; a changed build id recompiles buildid.o (linked into
+# libxul) and makes the relinked libxul.so look stale -- so the second pass re-links libxul
+# as `-shared` and hits the wasm-ld SIGSEGV again, failing the build. A fixed MOZ_BUILD_DATE
+# (14 digits, YYYYMMDDHHMMSS -- mach ignores any other length) keeps the build id identical
+# across both passes, so pass 2 sees libxul.so up to date and skips the link. Evaluated
+# once at make startup, so both passes inherit the same value.
+export MOZ_BUILD_DATE := $(shell date +%Y%m%d%H%M%S)
 
 # Engine build output (RELEASE uses its own objdir, matching the mozconfig + the
-# libxul.js build script). `libxul` keys off this existing to decide whether a first
+# gecko.js build script). `libxul` keys off this existing to decide whether a first
 # engine build is needed.
 OBJDIR := $(ROOT)/obj-full-emscripten$(if $(RELEASE),-release)
 LIBXUL := $(OBJDIR)/dist/bin/libxul.so
@@ -75,7 +91,7 @@ $(EMSDK_STAMP): $(WISP_PATCH_SRC)
 	  git clone https://github.com/emscripten-core/emsdk.git "$(EMSDK)"; \
 	fi
 	cd "$(EMSDK)" && ./emsdk install $(EMSDK_VERSION) && ./emsdk activate $(EMSDK_VERSION)
-	node libxul.js/build/patch-emsdk-wasmfs.mjs
+	node gecko.js/patch-emsdk-wasmfs.mjs
 	@touch "$@"
 
 # Optimized build (engine LTO + wasm-opt). NOTE: toggling RELEASE changes the
@@ -119,7 +135,7 @@ build: firefox vendor $(EMSDK_STAMP)
 	@# finishes the resource/chrome tiers. (|| true masks only the expected link failure;
 	@# any real error resurfaces in the second build.)
 	cd firefox && ./mach build || true
-	bash libxul.js/build/relink-engine-r.sh
+	bash gecko.js/relink-engine-r.sh
 	cd firefox && ./mach build
 
 # Force a reconfigure. Needed when you change something configure inspects that
@@ -129,20 +145,20 @@ configure: firefox vendor $(EMSDK_STAMP)
 	cd firefox && ./mach configure
 
 # Back-compat alias: the old embed-xul web build was removed; the web build IS the
-# libxul.js package now.
+# gecko.js package now.
 web: libxul
 
 # Build + serve the basic embed demo (Vite dev server with COOP/COEP + a WISP proxy).
 run: embed-demo
 
-# --- libxul.js library + demos (pnpm monorepo) -----------------------------
-# Build the libxul.js package (the default `all` target): the engine artifacts
+# --- gecko.js library + demos (pnpm monorepo) -----------------------------
+# Build the gecko.js package (the default `all` target): the engine artifacts
 # (build/build-lib.sh stages a MINIMAL gre-stage -> gecko.{js,wasm,data,worker.js})
 # + the rspack ESM bundle. Builds the engine (libxul.so) first if there isn't one.
 libxul: $(EMSDK_STAMP)
 	@test -e "$(LIBXUL)" || $(MAKE) build
 	pnpm install
-	pnpm --filter libxul.js run build
+	pnpm --filter gecko.js run build
 
 # Run the Vite demos (build the library first). `embed-demo` is the basic
 # embed-a-web-page demo; `chrome-demo` supplies the Firefox front-end files.
@@ -152,12 +168,12 @@ chrome-demo: libxul
 	pnpm --filter chrome-demo dev
 
 clean:
-	rm -f  libxul.js/wasm/gecko.js libxul.js/wasm/gecko.wasm libxul.js/wasm/gecko.data \
-	       libxul.js/wasm/gecko.worker.js libxul.js/wasm/gecko.debug.wasm \
-	       libxul.js/wasm/gecko.wasm.zst libxul.js/wasm/gecko.data.zst \
-	       libxul.js/wasm/gecko-assets.json \
-	       libxul.js/build/*.stripped.so libxul.js/build/*.o libxul.js/build/link.err
-	rm -rf libxul.js/build/gre-stage libxul.js/dist
+	rm -f  gecko.js/wasm/gecko.js gecko.js/wasm/gecko.wasm gecko.js/wasm/gecko.data \
+	       gecko.js/wasm/gecko.worker.js gecko.js/wasm/gecko.debug.wasm \
+	       gecko.js/wasm/gecko.wasm.zst gecko.js/wasm/gecko.data.zst \
+	       gecko.js/wasm/gecko-assets.json \
+	       gecko.js/build/*.stripped.so gecko.js/build/*.o gecko.js/build/link.err
+	rm -rf gecko.js/build/gre-stage gecko.js/dist
 
 distclean: clean
 	rm -rf obj-full-emscripten obj-full-emscripten-release firefox

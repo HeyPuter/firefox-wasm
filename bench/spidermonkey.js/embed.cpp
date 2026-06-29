@@ -22,6 +22,7 @@
 #include "builtin/TestingFunctions.h"
 #include "wasm/WasmJit.h"
 
+#include "js/ArrayBuffer.h"
 #include "js/CharacterEncoding.h"
 #include "js/CompilationAndEvaluation.h"
 #include "js/Conversions.h"
@@ -67,6 +68,38 @@ static bool PrintImpl(JSContext* cx, unsigned argc, JS::Value* vp) {
   fprintf(stdout, "\n");
   fflush(stdout);
   args.rval().setUndefined();
+  return true;
+}
+
+// readWasm(path) -> ArrayBuffer: read a (possibly huge) file into an ArrayBuffer
+// so tests can decode real modules (e.g. the 247MB gecko.wasm) without embedding
+// them as JS array literals.
+static bool ReadWasmImpl(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  if (args.length() < 1) { JS_ReportErrorASCII(cx, "readWasm: need path"); return false; }
+  JS::RootedString s(cx, JS::ToString(cx, args[0]));
+  if (!s) return false;
+  JS::UniqueChars path = JS_EncodeStringToUTF8(cx, s);
+  if (!path) return false;
+  FILE* f = fopen(path.get(), "rb");
+  if (!f) { JS_ReportErrorASCII(cx, "readWasm: cannot open %s", path.get()); return false; }
+  fseek(f, 0, SEEK_END);
+  long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (n < 0) { fclose(f); JS_ReportErrorASCII(cx, "readWasm: ftell failed"); return false; }
+  // Allocate with JS_malloc so the buffer is JS_free-compatible (the ArrayBuffer
+  // takes ownership and frees it with the JS allocator).
+  void* buf = JS_malloc(cx, size_t(n) ? size_t(n) : 1);
+  if (!buf) { fclose(f); return false; }
+  if (fread(buf, 1, size_t(n), f) != size_t(n)) {
+    fclose(f); JS_free(cx, buf); JS_ReportErrorASCII(cx, "readWasm: short read"); return false;
+  }
+  fclose(f);
+  JS::RootedObject ab(cx, JS::NewArrayBufferWithContents(
+                             cx, size_t(n), buf,
+                             JS::NewArrayBufferOutOfMemory::CallerMustFreeMemory));
+  if (!ab) { JS_free(cx, buf); return false; }  // ownership transferred on success
+  args.rval().setObject(*ab);
   return true;
 }
 
@@ -296,6 +329,7 @@ static bool DefineShellGlobal(JSContext* cx, JS::HandleObject global) {
     return false;
   return JS_DefineFunction(cx, global, "wjTraceDump", WjTraceDump, 0, 0) &&
          JS_DefineFunction(cx, global, "print", PrintImpl, 1, 0) &&
+         JS_DefineFunction(cx, global, "readWasm", ReadWasmImpl, 1, 0) &&
          JS_DefineFunction(cx, global, "assertEq", AssertEq, 2, 0) &&
          JS_DefineFunction(cx, global, "load", Load, 1, 0) &&
          JS_DefineFunction(cx, global, "read", Read, 1, 0) &&

@@ -31,11 +31,22 @@ ac_add_options --disable-shared-memory
 # Trim the surface for a first headless build.
 ac_add_options --disable-tests
 ac_add_options --disable-debug
-ac_add_options --enable-optimize
-# Release (GECKO_RELEASE=1, set by `make release` / `make ... RELEASE=1`):
-# link-time-optimize the engine. Toggling this reconfigures + rebuilds libxul.
-if [ "${GECKO_RELEASE:-}" = "1" ]; then
-  ac_add_options --enable-lto
+# Explicit -O2 (was bare --enable-optimize -> MOZ_OPTIMIZE_FLAGS=-O ~= -O1). -O2
+# gives the interpreter + engine substantially faster generated code, which
+# matters because content wasm runs interpreted (GECKO_WASM_INTERP) and the
+# engine itself is wasm; the extra build cost is a one-time recompile.
+ac_add_options --enable-optimize=-O2
+# Engine LTO is OPT-IN (GECKO_LTO=1) and deliberately NOT implied by RELEASE. The
+# libxul LTO link needs >54 GiB under emscripten 6.0.1 and OOM-kills the standard CI
+# runner (8 cores / 31 GiB) even as ThinLTO with a --thinlto-jobs cap AND 23 GiB swap
+# -- the peak is the single-process whole-program combine, which job caps can't bound.
+# So default RELEASE builds skip engine LTO and take the proven non-LTO link path (the
+# libxul `-shared` link quickly SIGSEGVs in wasm-ld -> relink-engine-r.sh relinks `-r`),
+# relying on wasm-opt -O3 (binaryen) for wasm-level optimization instead. Set GECKO_LTO=1
+# (e.g. `make ... LTO=1`) ONLY on a big-RAM host (~64 GiB+) to get cross-module LTO back.
+# Toggling the env var needs an explicit `make configure`; editing this file reconfigures.
+if [ "${GECKO_LTO:-}" = "1" ]; then
+  ac_add_options --enable-lto=thin
 fi
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
@@ -57,12 +68,30 @@ ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOM
 # missing FT_Done_MM_Var / variable fonts / COLRv1). tree_freetype is enabled
 # for EMSCRIPTEN in toolkit/moz.configure; expose the headers globally so every
 # dir resolves <ft2build.h> to the in-tree copy, and link the in-tree lib.
-# -msimd128: ENABLE_WASM_SIMD is auto-on for wasm32; the in-process wasm interpreter
-# executes v128 ops (needs wasm_simd128.h intrinsics) and emscripten requires it to
-# accept the -msse2 mozglue SIMD.cpp paths. Scalar interp TU opts out (-mno-simd128).
+# -msimd128 enables WebAssembly fixed-width 128-bit SIMD: LLVM autovectorization +
+# emscripten's SSE->wasm-simd intrinsic headers, so Gecko's SIMD paths (Skia, image/
+# media decode, qcms, memcpy) emit real wasm SIMD instead of scalar fallbacks. Browser
+# support is universal. This is a per-TU codegen flag -> forces a full engine rebuild.
+# (Also required for the in-process wasm interpreter's v128 intrinsics + the -msse2
+# mozglue SIMD.cpp paths; the scalar interp TU opts back out via -mno-simd128.)
 export CFLAGS="-I$topsrcdir/modules/freetype2/include -pthread -msimd128"
 export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -pthread -msimd128"
 export LDFLAGS="-pthread"
+# Rust also needs wasm SIMD enabled: -msimd128 above only affects clang (C/C++); Rust's
+# equivalent is the simd128 target-feature (off by default for wasm32-unknown-emscripten).
+# This turns on LLVM autovectorization for ALL Rust (Stylo, WebRender, ...) and the
+# core::arch::wasm32 fast paths in SIMD-aware crates (memchr, encoding_rs) + std (built
+# from source via -Z build-std). Honored as the Gecko `RUSTFLAGS` configure option,
+# additive to MOZ_RUST_DEFAULT_FLAGS.
+export RUSTFLAGS="-Ctarget-feature=+simd128"
+# When LTO is opted in (GECKO_LTO=1), cap ThinLTO backend parallelism: lld defaults to
+# one codegen job per core, and parallel jobs over the 3.4GB libxul multiply peak RAM.
+# (This bounds parallelism only; it does NOT fix the single-process combine peak, which
+# is why LTO still needs a big-RAM host -- see the --enable-lto note above. Bump the job
+# count if the host has RAM headroom.)
+if [ "${GECKO_LTO:-}" = "1" ]; then
+  export LDFLAGS="$LDFLAGS -Wl,--thinlto-jobs=2"
+fi
 
 # Cache compiles with sccache WHEN AVAILABLE (verified to cache emcc + host clang).
 # Gated on the binary existing -- a runner/CI without sccache (the GHA build does

@@ -1,4 +1,4 @@
 packages:
-  - libxul.js
-  - embed-demo
-  - chrome-demo
+  - gecko.js
+  - demo/embed
+  - demo/chrome

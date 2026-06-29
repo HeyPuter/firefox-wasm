@@ -1,9 +1,0 @@
-<!doctype html><meta charset=utf-8><title>coi-check</title>
-<pre id=out></pre><script>
-document.getElementById('out').textContent = JSON.stringify({
-  crossOriginIsolated: self.crossOriginIsolated,
-  hasSharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
-  canGrowSharedMem: (()=>{try{new WebAssembly.Memory({initial:1,maximum:2,shared:true});return true}catch(e){return String(e)}})()
-}, null, 2);
-document.title = 'coi-ready';
-</script>

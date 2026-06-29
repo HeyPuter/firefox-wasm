@@ -1,1 +1,0 @@
-../embed-xul/cdp-capture.cjs
