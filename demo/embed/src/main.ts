@@ -1,5 +1,8 @@
 import { Gecko } from 'gecko.js';
 
+// Injected by vite.config (define): the served engine wasm { url, compressed }.
+declare const __GECKO_WASM__: { url: string; compressed: boolean };
+
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const urlInput = document.getElementById('url') as HTMLInputElement;
 const wispInput = document.getElementById('wisp') as HTMLInputElement;
@@ -11,6 +14,8 @@ const jitToggle = document.getElementById('jit') as HTMLInputElement;
 // applied on reload rather than live. The Vite dev server runs a WISP proxy at
 // /wisp/ on this same origin; default the endpoint to it.
 const LS_KEY = 'libxul-demo-opts';
+const URL_KEY = 'libxul-demo-url';        // last URL typed into the address bar, persisted
+const savedUrl = localStorage.getItem(URL_KEY) ?? '';
 const defaultWisp = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/wisp/`;
 interface Opts { gpu: boolean; jit: boolean; wisp: string; }
 const saved: Partial<Opts> = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
@@ -23,6 +28,7 @@ const opts: Opts = {
 wispInput.value = opts.wisp;
 gpuToggle.checked = opts.gpu;
 jitToggle.checked = opts.jit;
+if (savedUrl) urlInput.value = savedUrl;
 
 // GPU is presence-gated; the wasm JIT is on by default and disabled by GECKO_NOWASMJIT.
 // With GPU on, also route content WebGL to a real host GL context (GECKO_GL_PASSTHROUGH).
@@ -30,6 +36,13 @@ const env: Record<string, string> = {};
 if (opts.gpu) {
   env.GECKO_GPU = '1';
   env.GECKO_GL_PASSTHROUGH = '1';
+  // Hand the WebRender display-list transaction straight to the in-process
+  // compositor thread (skip the content->compositor IPDL Pickle round-trip). Opt-in
+  // engine flag; see WebRenderBridgeChild/Parent InProcess* path.
+  env.GECKO_WR_DIRECT = '1';
+  // Async pan/zoom: scroll on the compositor (now correctly targets nested
+  // overflow:scroll containers via the GetDocument/SetTargetAPZC fix).
+  env.GECKO_APZ = '1';
 }
 if (!opts.jit) env.GECKO_NOWASMJIT = '1';
 
@@ -47,8 +60,9 @@ if (geEnv) Object.assign(env, geEnv);
 
 const gecko = new Gecko({
   canvas,
-  // The vite plugin serves gecko.wasm + gecko.data at the server root.
-  assetBase: '/',
+  // The vite plugin serves the engine wasm at the server root; __GECKO_WASM__ (injected
+  // by vite.config) is { url, compressed } for whichever wasm gecko.js built.
+  wasm: __GECKO_WASM__,
   wispUrl: opts.wisp.trim() || undefined,
   env,
   print: (s) => console.log('[gecko]', s),
@@ -82,7 +96,10 @@ function normalizeUrl(input: string): string {
 urlInput.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   const url = normalizeUrl(urlInput.value);
-  if (url) gecko.load(url);
+  if (url) {
+    localStorage.setItem(URL_KEY, urlInput.value);  // persist the typed URL across reloads
+    gecko.load(url);
+  }
 });
 
 // Initial page: an inline welcome doc (renders with no proxy).
@@ -96,5 +113,7 @@ const page = `<!doctype html><meta charset="utf-8">
      WISP proxy.</p>
   <input placeholder="type here (input is forwarded to the engine)" style="padding:.4rem;width:60%">
 </body>`;
+// Always show the welcome doc on load; the persisted URL only pre-fills the address
+// bar (press Enter to load it) — we don't auto-navigate.
 await gecko.load('data:text/html,' + encodeURIComponent(page));
 console.log('[demo] page loaded');

@@ -111,13 +111,35 @@ void do_wheel(int x, int y, double dx, double dy, int modifiers) {
   ev.mLineOrPageDeltaX = dx > 0 ? (int32_t)std::floor(dx) : (int32_t)std::ceil(dx);
   ev.mLineOrPageDeltaY = dy > 0 ? (int32_t)std::floor(dy) : (int32_t)std::ceil(dy);
   ev.mRefPoint = nsContentUtils::ToWidgetPoint(CSSPoint(x, y), offset, pc);
-  widget->DispatchEvent(&ev);
 
-  // The windowless build has no APZ, so the dispatched wheel event is "consumed"
-  // by the event manager (eConsumeNoDefault) but the scroll isn't applied. If the
-  // position didn't move and content didn't preventDefault (e.g. a custom scroller
-  // / map), apply the scroll to the root scroll frame ourselves. Use Smooth mode
-  // so the GPU compositor animates it over refresh-driver ticks.
+  // With APZ enabled (GPU mode), route the wheel through the APZ input bridge so the
+  // scroll is handled ASYNCHRONOUSLY on the compositor (async scroll transform sampled
+  // per composite) instead of a synchronous main-thread display-list rebuild. APZ owns
+  // applying the scroll, so do NOT also scroll the root frame ourselves.
+  static bool s_apzLogged = false;
+  if (!s_apzLogged) {
+    s_apzLogged = true;
+    printf("do_wheel: widget AsyncPanZoomEnabled=%d\n", widget->AsyncPanZoomEnabled());
+    fflush(stdout);
+  }
+  if (widget->AsyncPanZoomEnabled()) {
+    nsIWidget::ContentAndAPZEventStatus st = widget->DispatchInputEvent(&ev);
+    static int s_apzResN = 0;
+    if (s_apzResN < 5) {
+      s_apzResN++;
+      printf("APZ-DIAG do_wheel result: apzStatus=%d contentStatus=%d\n",
+             (int)st.mApzStatus, (int)st.mContentStatus);
+      fflush(stdout);
+    }
+    return;
+  }
+
+  // Non-APZ (software) path: the dispatched wheel event is "consumed" by the event
+  // manager (eConsumeNoDefault) but the scroll isn't applied. If the position didn't
+  // move and content didn't preventDefault (e.g. a custom scroller / map), apply the
+  // scroll to the root scroll frame ourselves. Use Smooth mode so the GPU compositor
+  // animates it over refresh-driver ticks.
+  widget->DispatchEvent(&ev);
   if (sf && sf->GetScrollPosition() == before && !ev.DefaultPrevented()) {
     sf->ScrollToCSSPixels(
         CSSPoint::FromAppUnits(before) + CSSPoint((float)dx, (float)dy),

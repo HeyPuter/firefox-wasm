@@ -74,8 +74,15 @@ const coop = {
   'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
+// The served engine wasm -- whichever gecko.js built (raw gecko.wasm in debug, or
+// gecko.wasm.zst in release). Injected as __GECKO_WASM__ and passed to Gecko's required
+// `wasm` option in main.ts.
+const wasmCompressed = fs.existsSync(path.join(libDist, 'gecko.wasm.zst'));
+const GECKO_WASM = { url: wasmCompressed ? '/gecko.wasm.zst' : '/gecko.wasm', compressed: wasmCompressed };
+
 export default defineConfig({
   plugins: [libxulEngine(), wispProxy()],
+  define: { __GECKO_WASM__: JSON.stringify(GECKO_WASM) },
   // gecko.js is a workspace package under active rebuild; don't pre-bundle/cache
   // it, so a plain reload picks up a fresh dist/gecko.js (no `vite --force`).
   optimizeDeps: { exclude: ['gecko.js'] },

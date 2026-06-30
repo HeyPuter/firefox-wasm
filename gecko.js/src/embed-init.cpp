@@ -421,6 +421,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       // pipeline (~0.2 cores of glGetError on a GL-heavy page). Disable it (release
       // behavior). [pref backs StaticPrefs::gfx_webrender_panic_on_gl_error]
       mozilla::Preferences::SetBool("gfx.webrender.panic-on-gl-error", false);
+      // Async pan/zoom (APZ): handle scrolling on the compositor (async scroll
+      // transform sampled per composite) instead of a synchronous main-thread
+      // display-list rebuild per wheel tick. gfxPlatform::AsyncPanZoomEnabled is
+      // patched to honor this pref on emscripten (the e10s gate is skipped).
+      // Gated on GECKO_APZ so it can be A/B'd against the legacy main-thread scroll.
+      if (getenv("GECKO_APZ")) {
+        mozilla::Preferences::SetBool("layers.async-pan-zoom.enabled", true);
+        printf("xul_init: GECKO_APZ -> async pan/zoom enabled\n");
+      }
       printf("xul_init: GECKO_GPU -> forced hardware WebRender prefs\n");
       fflush(stdout);
     } else {

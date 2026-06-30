@@ -1,6 +1,9 @@
 import { Gecko } from 'gecko.js';
 import { prepareChromeFs, GRE_OPFS_PATH, PROFILE_OPFS_PATH, type ChromeAssetsProgress } from './chrome-fs';
 
+// Injected by vite.config (define): the served engine wasm { url, compressed }.
+declare const __GECKO_WASM__: { url: string; compressed: boolean };
+
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const splash = document.getElementById('splash') as HTMLElement;
 const status = document.getElementById('splash-status') as HTMLElement;
@@ -126,6 +129,12 @@ const optEnv: Record<string, string> = { GECKO_CHROME: '1' };
 if (opts.gpu) {
   optEnv.GECKO_GPU = '1';
   optEnv.GECKO_GL_PASSTHROUGH = '1';
+  // In-process WebRender display-list handoff (skip the content->compositor IPDL
+  // Pickle round-trip). Opt-in engine flag (GECKO_WR_DIRECT).
+  optEnv.GECKO_WR_DIRECT = '1';
+  // Async pan/zoom (correctly targets nested scroll containers via the
+  // GetDocument/SetTargetAPZC fix).
+  optEnv.GECKO_APZ = '1';
 }
 if (!opts.jit) optEnv.GECKO_NOWASMJIT = '1';
 
@@ -180,7 +189,8 @@ async function start(): Promise<void> {
     // Fill the viewport; a debounced window-resize listener keeps it in sync (below).
     width: window.innerWidth,
     height: window.innerHeight,
-    assetBase: '/',
+    // __GECKO_WASM__ (injected by vite.config) is { url, compressed } for the served wasm.
+    wasm: __GECKO_WASM__,
     env: optEnv,
     // GRE: the extracted tar lives at OPFS `${GRE_OPFS_PATH}`; libxul builds its
     // built-in OPFS provider over it (consulted provider-first for /gre, baked

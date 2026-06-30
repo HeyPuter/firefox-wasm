@@ -7,8 +7,8 @@
 // supplied by the consumer through an `fs` provider (readFile/readdir).
 
 // gecko.js (emscripten glue) is inlined into this bundle as a source string and run
-// from a Blob URL, so consumers never serve it -- only gecko.wasm + gecko.data are
-// assets (see GeckoOptions.assetBase). emscripten 6.0.x no longer emits a separate
+// from a Blob URL, so consumers never serve it; gecko.data is inlined too, so the ONLY
+// artifact the consumer serves is the wasm (GeckoOptions.wasm). emscripten 6.0.x no longer emits a separate
 // *.worker.js; pthread workers spawn from the main module via mainScriptUrlOrBlob.
 import geckoSource from '../wasm/gecko.js?source';
 import { ZSTDDecoder } from 'zstddec';
@@ -100,9 +100,15 @@ export interface GeckoOptions {
    * "gecko-profile". (Falls back to ephemeral in-memory if OPFS is unavailable.)
    */
   profile?: ProfileProvider | string;
-  /** Where gecko.wasm + gecko.data are served (URL prefix; default './', relative to the page). */
-  assetBase?: string;
-  /** Full override of engine-asset location (file -> url); takes precedence over assetBase. */
+  /**
+   * The served engine wasm — REQUIRED, no default. `url` is where the consumer serves it
+   * (`gecko.wasm`, or `gecko.wasm.zst` if zstd-compressed); set `compressed: true` for the
+   * `.zst` (the loader decodes it in-browser). The glue + gecko.data are inlined into this
+   * bundle, so the wasm is the ONLY artifact you serve. e.g. `{ url: '/gecko.wasm' }` or
+   * `{ url: '/gecko.wasm.zst', compressed: true }`.
+   */
+  wasm: { url: string; compressed?: boolean };
+  /** Advanced: override emscripten's file locator (rarely needed; the wasm comes from `wasm.url`). */
   locateFile?: (file: string) => string;
   print?: (s: string) => void;
   printErr?: (s: string) => void;
@@ -226,9 +232,15 @@ export class Gecko {
     const print = this.opts.print ?? ((s) => console.log(s));
     const printErr = this.opts.printErr ?? ((s) => console.warn(s));
 
+    if (!this.opts.wasm?.url) {
+      throw new Error(
+        "gecko.js: the `wasm` option is required — set it to where you serve the engine wasm, " +
+        "e.g. { url: '/gecko.wasm' } (or { url: '/gecko.wasm.zst', compressed: true }).");
+    }
+    const wasmUrl = this.opts.wasm.url;
+    const wasmCompressed = this.opts.wasm.compressed ?? false;
+
     const createGecko = await loadEngine();
-    // Only gecko.wasm + gecko.data are served by the consumer; default page-relative.
-    const assetBase = this.opts.assetBase ?? './';
 
     let resolveReady!: () => void;
     const ready = new Promise<void>((r) => (resolveReady = r));
@@ -301,15 +313,16 @@ export class Gecko {
       }],
     };
     // pthread workers load the (bundled) runtime from this Blob (emscripten 6.0.x spawns
-    // them from the main module, no separate *.worker.js); the wasm reaches workers as a
-    // compiled module, so locateFile only resolves assets on the main thread.
+    // them from the main module, no separate *.worker.js). The wasm is supplied directly
+    // via instantiateWasm (below) and gecko.data via getPreloadedPackage, so emscripten
+    // never fetches by filename -- locateFile is only honored if the consumer overrides it.
     moduleOpts.mainScriptUrlOrBlob = geckoBlobUrl();
-    moduleOpts.locateFile = this.opts.locateFile ?? ((f: string) => assetBase + f);
+    if (this.opts.locateFile) moduleOpts.locateFile = this.opts.locateFile;
 
     // Decode the inlined gecko.data.zst with zstddec and feed it to emscripten via
-    // getPreloadedPackage (so the .data is never fetched). In RELEASE the wasm is
-    // zstd too: fetch gecko.wasm.zst, decode, and provide it via instantiateWasm;
-    // otherwise emscripten fetches the raw gecko.wasm through locateFile.
+    // getPreloadedPackage (so the .data is never fetched). The engine wasm comes from
+    // wasm.url: when wasm.compressed it's a zstd .zst we decode here (uncompressed size
+    // from the inlined manifest); otherwise it's stream-compiled directly.
     {
       const decoder = new ZSTDDecoder();
       await decoder.init();
@@ -321,17 +334,26 @@ export class Gecko {
           ? (u.buffer as ArrayBuffer)
           : (u.slice().buffer as ArrayBuffer);
       };
-      if (assets.wasmCompressed && assets.wasmSize) {
-        const wasmZst = new Uint8Array(
-          await (await fetch(assetBase + 'gecko.wasm.zst')).arrayBuffer());
-        const wasmBytes = decoder.decode(wasmZst, assets.wasmSize);
-        moduleOpts.instantiateWasm = (imports: any, success: any) => {
-          WebAssembly.instantiate(wasmBytes as BufferSource, imports)
-            .then((r: any) => success(r.instance, r.module))
-            .catch((e) => printErr('[libxul] wasm instantiate failed: ' + e));
-          return {};
-        };
-      }
+      moduleOpts.instantiateWasm = (imports: any, success: any) => {
+        (async () => {
+          let r: WebAssembly.WebAssemblyInstantiatedSource;
+          if (wasmCompressed) {
+            const zst = new Uint8Array(await (await fetch(wasmUrl)).arrayBuffer());
+            const bytes = decoder.decode(zst, assets.wasmSize);
+            r = await WebAssembly.instantiate(bytes as BufferSource, imports);
+          } else {
+            try {
+              r = await WebAssembly.instantiateStreaming(fetch(wasmUrl), imports);
+            } catch {
+              // streaming needs an application/wasm response; fall back to a buffer fetch.
+              const bytes = await (await fetch(wasmUrl)).arrayBuffer();
+              r = await WebAssembly.instantiate(bytes, imports);
+            }
+          }
+          success(r.instance, r.module);
+        })().catch((e) => printErr('[libxul] wasm instantiate failed: ' + e));
+        return {};
+      };
     }
 
     this.mod = await createGecko(moduleOpts);
