@@ -387,6 +387,21 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // PaintAndRequestComposite.)
     mozilla::Preferences::SetBool("layout.testing.top-level-always-active", true);
 
+    // MEDIA AUTOPLAY: a windowless browser is never a foreground/active *tab* in the
+    // media sense, so HTMLMediaElement::Play parks autoplay as a pending promise and
+    // only frame 1 is ever rendered:
+    //   - MediaPlaybackDelayPolicy::ShouldDelayPlayback() delays Play() for an
+    //     inactive tab; block-autoplay-until-in-foreground=false short-circuits it.
+    //   - media.autoplay.default defaults to 1 (Blocked); 0 (Allowed) lets <video>
+    //     autoplay outright.
+    //   - suspend-background-video would suspend the decoder for a "hidden" tab.
+    // These let host-WebCodecs-decoded <video> actually play (see the WebCodecsProxy
+    // PlatformDecoderModule + lib/webcodecs-bridge.js).
+    mozilla::Preferences::SetBool("media.block-autoplay-until-in-foreground", false);
+    mozilla::Preferences::SetInt("media.autoplay.default", 0 /* Allowed */);
+    mozilla::Preferences::SetBool("media.suspend-background-video.enabled", false);
+    printf("xul_init: enabled media autoplay (no foreground-delay/suspend)\n");
+
     // Follow the HOST browser's prefers-color-scheme. The loader's preRun reads
     // window.matchMedia('(prefers-color-scheme: dark)') and passes it as GECKO_DARK;
     // setting ui.systemUsesDarkTheme overrides LookAndFeel::NativeGetInt
@@ -507,6 +522,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     };
     for (auto* p : kDisableBool) mozilla::Preferences::SetBool(p, false);
     printf("xul_init: disabled safe-browsing / tracking-protection / predictor\n");
+
+    // HTTP disk cache (Cache2) writes entries under ProfD/cache2. On the default
+    // OPFS profile that makes every cache write()/flush() a proxied round-trip to
+    // the OPFS worker (__wasmfs_opfs_write_access) -- the single biggest named
+    // function on a cold page load, and pure overhead for a session-scoped browser.
+    // Keep the in-memory cache; disable the disk cache unless the embedder opts into
+    // cross-session persistence with GECKO_DISK_CACHE.
+    if (!getenv("GECKO_DISK_CACHE")) {
+      mozilla::Preferences::SetBool("browser.cache.disk.enable", false);
+      printf("xul_init: disabled HTTP disk cache (set GECKO_DISK_CACHE=1 to persist)\n");
+    }
 
     // User-Agent: the wasm/emscripten build computes a non-desktop platform token
     // (OSCPU), so sites like Google sniff it as an unknown/limited browser and

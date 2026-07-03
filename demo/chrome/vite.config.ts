@@ -52,8 +52,14 @@ const GRE_EXCLUDES = [
 
 // Trim heavy, optional feature trees from the chrome bundle unless CHROME_FULL=1
 // (which ships the complete Firefox asset set). None are needed to boot or render
-// pages: hyphenation dicts (cosmetic line breaks), spellcheck dicts, and the Remote
-// Agent / CDP+WebDriver (chrome/remote -- dev-tooling, not used at runtime).
+// pages: hyphenation dicts (cosmetic line breaks) and spellcheck dicts.
+// chrome/remote (Remote Agent / CDP+WebDriver, ~720K) must ship: this build has
+// ENABLE_WEBDRIVER, so browser.js's gRemoteControl dereferences the Marionette
+// service on EVERY chrome-window load (gBrowserInit.onLoad -> updateVisualCue).
+// Excluding it left remote.manifest pointing at missing files -> the lazy service
+// getter failed -> `Marionette` undefined -> onLoad threw before registering
+// _delayedStartup, so PanelUI/BookmarkingUI/FullZoom etc. never initialized
+// (first symptom: hamburger menu "PanelUI.panel is undefined").
 // For pdf.js, keep the small integration modules in chrome/pdfjs/content/*.sys.mjs
 // (PdfjsContextMenu/PdfStreamConverter/PdfJs are eagerly imported -- e.g. by the
 // context-menu actor; dropping all of pdfjs broke right-click) and only drop the
@@ -63,7 +69,7 @@ const GRE_EXCLUDES = [
 if (!process.env.CHROME_FULL) {
   GRE_EXCLUDES.push(
     '/chrome/pdfjs/content/web', '/chrome/pdfjs/content/build',
-    '/hyphenation', '/dictionaries', '/chrome/remote',
+    '/hyphenation', '/dictionaries',
   );
 }
 

@@ -87,8 +87,8 @@ EMSETTINGS=(
   -sSTACK_SIZE=67108864 -sEXIT_RUNTIME=0
   -pthread -sPTHREAD_POOL_SIZE=20 -sPTHREAD_POOL_SIZE_STRICT=0
   -sMODULARIZE=1 -sEXPORT_NAME=createGecko
-  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots,_InterpTraceRoots,_b_help
-  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency,HEAPU8,HEAP32
+  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots,_InterpTraceRoots,_b_help,_hostimg_renderer_tid,_gecko_coarse_now_ptr
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency,HEAPU8,HEAP32,HEAPF32,UTF8ToString
   # WasmFS (the new FS impl). Its socket syscalls are reinstated by the WISP
   # backend patched into libwasmfs (emsdk-patches/wisp_socket.h); wisp-net.js is
   # the JS transport. Legacy SOCKFS/MEMFS/IDBFS are gone under WASMFS.
@@ -108,6 +108,20 @@ EMSETTINGS=(
   # pervasive JS frames (xptcall trampoline, DOM bindings). Scoping JSPI to this one
   # import keeps everything else on its original non-suspending block model.
   --js-library "$LIB/gl-present.js"
+  # Coarse monotonic clock writer (on by default; GECKO_COARSE_CLOCK=0 disables): refreshes the
+  # embedder's shared-heap clock word so TimeStamp/NSPR low-res reads skip the per-call
+  # wasm->JS performance.now() crossing. See gecko.js/src/embed-xul.cpp.
+  --js-library "$LIB/coarse-clock.js"
+  # Host WebCodecs proxy: routes content H.264/VP8/VP9 video + AAC audio decode to
+  # the browser's VideoDecoder/AudioDecoder (in-tree dom/media/platforms/wasm/
+  # WebCodecsProxyDecoderModule feeds an SPSC shared-heap ring; this library owns the
+  # host decoders and writes decoded frames/PCM back into the ring). Also hosts the
+  # audio playback-clock sync (hostaudio_set_playing/set_media_time).
+  --js-library "$LIB/webcodecs-bridge.js"
+  # Host still-image decode: routes content PNG/JPEG/WebP/AVIF decode to the
+  # browser's WebCodecs ImageDecoder (in-tree image/decoders/nsHostProxyImageDecoder,
+  # opt-in GECKO_IMG_PASSTHROUGH). Single-shot shared-heap control block + futex.
+  --js-library "$LIB/hostimg-bridge.js"
   -sPROXY_TO_PTHREAD=1
   -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=1 -sFULL_ES3
   -sOFFSCREEN_FRAMEBUFFER=1 -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1 -sGL_ENABLE_GET_PROC_ADDRESS=1
@@ -137,7 +151,14 @@ ls -la "$PKG"/wasm/gecko.js "$PKG"/wasm/gecko.wasm "$PKG"/wasm/gecko.data "$PKG"
 # string with $GECKO_WASMOPT_FLAGS; set NO_WASM_OPT=1 to skip optimization entirely.
 if [ "${GECKO_RELEASE:-}" = "1" ] && [ "${NO_WASM_OPT:-}" != "1" ]; then
   WASMOPT="${EMSDK:+$EMSDK/upstream/bin/}wasm-opt"
-  WASMOPT_FLAGS="${GECKO_WASMOPT_FLAGS:--all -O4 -O4 -O4 -O4 -O4 -O4}"
+  # Each `-O` re-runs binaryen's ENTIRE pipeline (~49 passes), including a leading
+  # `flatten` that is only useful ONCE on the freshly-linked -O0 module -- so the old
+  # `-O4 x6` ran flatten (and everything else) six times for no benefit. One -O4
+  # (flatten/rereloop once) + one -O3 (re-optimize, no re-flatten) gives an equal-or-
+  # better module in a fraction of the wall time over this ~235MB binary. Do NOT add
+  # `--converge`: it re-runs the whole pipeline to a fixpoint, which is effectively
+  # unbounded on a module this large. Override with $GECKO_WASMOPT_FLAGS.
+  WASMOPT_FLAGS="${GECKO_WASMOPT_FLAGS:--all -O4 -O3}"
   echo ">> wasm-opt $WASMOPT_FLAGS  (release, on gecko.wasm)"
   # shellcheck disable=SC2086 -- intentional word-splitting of the flag string
   "$WASMOPT" $WASMOPT_FLAGS "$PKG/wasm/gecko.wasm" -o "$PKG/wasm/gecko.wasm.opt" \

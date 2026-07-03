@@ -1,6 +1,9 @@
 // Window/docshell lifecycle + URL loading (content windowless-browser path and the
 // chrome AppWindow path). Split from embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
+#include "js/Conversions.h"
+#include "js/Exception.h"
+#include "js/PropertyAndElement.h"
 
 // A single windowless browser / chrome AppWindow is created lazily and kept alive
 // across loads + input events so the live document stays interactive.
@@ -226,9 +229,39 @@ bool RunChromeScript(const nsACString& aScript,
   }
   JS::Rooted<JS::Value> rval(cx);
   if (!JS::Evaluate(cx, options, srcBuf, &rval)) {
-    printf("RunChromeScript: eval threw\n");
+    // Describe the exception (message + stack) instead of swallowing it; the
+    // description is printed AND handed back through aOutResult so evalChrome
+    // callers see "EvalThrew: ..." as the result string.
+    nsAutoCString desc("EvalThrew: ");
+    JS::Rooted<JS::Value> exn(cx);
+    if (JS_GetPendingException(cx, &exn)) {
+      JS_ClearPendingException(cx);
+      JS::Rooted<JSString*> str(cx, JS::ToString(cx, exn));
+      if (JS::UniqueChars msg = str ? JS_EncodeStringToUTF8(cx, str) : nullptr) {
+        desc.Append(msg.get());
+      } else {
+        JS_ClearPendingException(cx);  // ToString threw
+        desc.AppendLiteral("<unstringifiable exception>");
+      }
+      if (exn.isObject()) {
+        JS::Rooted<JSObject*> obj(cx, &exn.toObject());
+        JS::Rooted<JS::Value> stackVal(cx);
+        if (JS_GetProperty(cx, obj, "stack", &stackVal) &&
+            stackVal.isString()) {
+          JS::Rooted<JSString*> stackStr(cx, stackVal.toString());
+          if (JS::UniqueChars stack = JS_EncodeStringToUTF8(cx, stackStr)) {
+            desc.AppendLiteral("\n");
+            desc.Append(stack.get());
+          }
+        }
+        JS_ClearPendingException(cx);  // in case the stack getter threw
+      }
+    } else {
+      desc.AppendLiteral("<uncatchable / no pending exception>");
+    }
+    printf("RunChromeScript: %s\n", desc.get());
     fflush(stdout);
-    JS_ClearPendingException(cx);
+    if (aOutResult) *aOutResult = strdup(desc.get());
     return false;
   }
   if (aOutResult && !rval.isNullOrUndefined()) {
@@ -454,6 +487,33 @@ bool xul_load(const char* url, int width, int height) {
           "try{ChromeUtils.importESModule('resource:///modules/"
           "ExtensionsUI.sys.mjs').ExtensionsUI.init();}"
           "catch(e){console.error('ExtensionsUI.init: '+e);}"
+          // Unblock the bookmarks toolbar. PlacesToolbarHelper.init() (delayed
+          // startup) awaits PlacesUIUtils.canLoadToolbarContentPromise, resolved
+          // only by PlacesUIUtils.unblockToolbars -- a 'browser-idle-startup'
+          // category task that BrowserGlue._onWindowsRestored dispatches on
+          // 'sessionstore-windows-restored', which never fires here (SessionStore
+          // doesn't fully run). Without it the toolbar's PlacesToolbar view is
+          // never constructed: no bookmark items, no "Import bookmarks" message.
+          // Resolving the promise directly is order-independent and side-effect
+          // free (vs firing the whole windows-restored notification).
+          "try{ChromeUtils.importESModule('moz-src:///browser/components/places/"
+          "PlacesUIUtils.sys.mjs').PlacesUIUtils.unblockToolbars();}"
+          "catch(e){console.error('unblockToolbars: '+e);}"
+          // Register the built-in page actions (the urlbar bookmark star).
+          // PageActions.init is a 'browser-first-window-ready' category task;
+          // BrowserGlue._onFirstWindowLoaded dispatches that category but aborts
+          // first in _maybeOfferProfileReset (Services.appinfo.replacedLockTime
+          // -> NS_ERROR_NOT_AVAILABLE: no XRE profile lock here). Without it
+          // PageActions.actionForID('bookmark') is null and Ctrl+D throws
+          // "PageActions: No anchor node for <no action>" (StarUI can't anchor).
+          // Late init is the normal flow (per-window BrowserPageActions.init runs
+          // first in real Firefox too); onActionAdded places the star button.
+          // Deliberately NOT dispatching the whole browser-first-window-ready
+          // category: it also contains ProcessHangMonitor/TabCrashHandler/DoH/
+          // profile services, which this embedding must not run.
+          "try{ChromeUtils.importESModule('resource:///modules/"
+          "PageActions.sys.mjs').PageActions.init();}"
+          "catch(e){console.error('PageActions.init: '+e);}"
           // Round popup/menu corners like desktop Firefox. The headless/other-platform
           // theme leaves them square; register an agent !important sheet (beats author
           // rules) so menupopups and panels get a small radius. Our compositor paints

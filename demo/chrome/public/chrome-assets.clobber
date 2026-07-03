@@ -1,1 +1,1 @@
-7 (re-extract: pdfjs content/*.sys.mjs now in REQUIRED_FILES; force stale OPFS refresh)
+8 (re-extract: ship chrome/remote -- Marionette service must load or gBrowserInit.onLoad throws)

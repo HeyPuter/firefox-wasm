@@ -14,6 +14,22 @@ extern "C" int pthread_setname_np(pthread_t, const char*) { return 0; }
 int g_gl_passthrough = 0;
 extern "C" int gecko_gl_passthrough_enabled() { return g_gl_passthrough; }
 
+// Coarse monotonic clock (on by default; GECKO_COARSE_CLOCK=0 disables). g_coarse_now_ns holds
+// the same nanosecond value clock_gettime(CLOCK_MONOTONIC) would return (emscripten
+// _emscripten_get_now()*1e6), refreshed ~every 1ms by a main-thread JS writer
+// (lib/coarse-clock.js, which calls _emscripten_get_now() itself so the timelines
+// match exactly). TimeStamp's low-res path and NSPR PR_IntervalNow read it lock-free
+// to skip the per-call wasm->JS performance.now() crossing. Flag captured in main()
+// where getenv sees ENV; read by libxul/NSPR via the weak gecko_coarse_clock_enabled.
+int g_coarse_clock = 0;
+extern "C" int gecko_coarse_clock_enabled() { return g_coarse_clock; }
+__attribute__((aligned(8))) int64_t g_coarse_now_ns = 0;
+extern "C" EMSCRIPTEN_KEEPALIVE int64_t* gecko_coarse_now_ptr() {
+  return &g_coarse_now_ns;
+}
+// Defined in lib/coarse-clock.js (__proxy:'sync'); started from main() when enabled.
+extern "C" void gecko_coarse_clock_start();
+
 // Process-metrics helpers live in toolkit/components/processtools, which isn't
 // compiled for wasm. libxul references them from glean power-metrics recording,
 // which the user-interaction observer fires on the first input event. Without
@@ -61,6 +77,14 @@ int main() {
   g_gl_passthrough = getenv("GECKO_GL_PASSTHROUGH") != nullptr;
   printf("embed-xul: GECKO_GL_PASSTHROUGH=%d\n", g_gl_passthrough);
   fflush(stdout);
+  extern int g_coarse_clock;
+  const char* coarseEnv = getenv("GECKO_COARSE_CLOCK");
+  g_coarse_clock = !(coarseEnv && strcmp(coarseEnv, "0") == 0);
+  printf("embed-xul: GECKO_COARSE_CLOCK=%d\n", g_coarse_clock);
+  fflush(stdout);
+  if (g_coarse_clock) {
+    gecko_coarse_clock_start();
+  }
   printf("embed-xul: GECKO_GPU=%d (%s rendering)\n", (int)g_gpu,
          g_gpu ? "GPU/WebRender->canvas" : "software RenderDocument+blit");
   fflush(stdout);
