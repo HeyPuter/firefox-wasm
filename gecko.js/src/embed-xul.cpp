@@ -3,6 +3,16 @@
 // embed-xul.h for the shared interface.
 #include "embed-xul.h"
 #include <emscripten/threading.h>  // emscripten_futex_wait (event-driven command loop)
+
+// JS->wasm JIT deferred-compile drain (WasmJitRuntime.cpp in libxul). Called at the
+// embed's main-thread idle points (between commands / after event pumps) so hot fns
+// deferred off the load critical path by GECKO_WJ_DEFERCOMPILE get compiled here,
+// not while a page-load task is running. No-op unless deferral queued something.
+namespace js {
+namespace wasm {
+void WasmJitDrainDeferred();
+}
+}  // namespace js
 // No-op override of pthread_setname_np. musl provides a real one, but thread names
 // are irrelevant in this embedding; SpiderMonkey/mozglue call it on thread startup,
 // so define it as a cheap no-op.
@@ -122,6 +132,7 @@ int main() {
     int32_t s = g_cmd->state;
     if (s != 1) {  // idle: pump the engine loop, then wait for a command or timeout
       NS_ProcessPendingEvents(nullptr, 0);  // non-blocking drain of ready runnables
+      js::wasm::WasmJitDrainDeferred();  // compile deferred hot fns off the critical path
       // futex_wait returns at once if `state` already changed (no lost wakeups), so
       // a request submitted in the race window between the read and the wait is not
       // missed -- it's why this takes the expected value `s`.
