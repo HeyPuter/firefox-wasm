@@ -1,0 +1,373 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #17191c;
+  color: #f7f7f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow: hidden;
+  background: #17191c;
+  color: #f7f7f5;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+#screen {
+  display: none;
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  image-rendering: pixelated;
+  background: #fff;
+  outline: none;
+}
+
+#screen.ready {
+  display: block;
+}
+
+#splash {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+#splash.done {
+  display: none;
+}
+
+.splash-shell {
+  width: min(860px, 100%);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.splash-shell[data-phase="console"] {
+  grid-template-columns: 1fr;
+}
+
+.splash-shell[data-phase="console"] .project-card {
+  display: none;
+}
+
+.project-card,
+.stage-card {
+  border: 1px solid #343941;
+  background: #20242a;
+  border-radius: 8px;
+}
+
+.project-card {
+  padding: 24px;
+}
+
+.project-logo {
+  width: 150px;
+  height: auto;
+  display: block;
+  margin-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #9ca6b3;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.splash-title {
+  margin: 0;
+  max-width: 560px;
+  font-size: 28px;
+  line-height: 1.15;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.project-copy {
+  max-width: 620px;
+  margin: 16px 0 0;
+  color: #c8ced8;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.project-facts {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.fact {
+  padding: 12px 14px;
+  border: 1px solid #343941;
+  border-radius: 6px;
+  background: #1a1d22;
+}
+
+.fact strong,
+.fact span {
+  display: block;
+}
+
+.fact strong {
+  color: #f7f7f5;
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+
+.fact span {
+  color: #aab3c0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.stage-card {
+  min-height: 360px;
+  padding: 22px;
+}
+
+.phase-section {
+  display: none;
+}
+
+.stage-card[data-phase="loading"] .phase-loading,
+.stage-card[data-phase="ready"] .phase-ready,
+.stage-card[data-phase="console"] .phase-console {
+  display: block;
+}
+
+.phase-kicker {
+  margin: 0 0 8px;
+  color: #9ca6b3;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.phase-title {
+  margin: 0;
+  color: #f7f7f5;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 650;
+}
+
+.splash-status {
+  min-height: 42px;
+  margin: 14px 0 18px;
+  color: #c8ced8;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.progress-track {
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid #46505c;
+  border-radius: 4px;
+  background: #2d333b;
+}
+
+.progress-fill {
+  width: 0%;
+  height: 100%;
+  background: #6bd1ff;
+  transition: width 120ms ease;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 8px;
+  color: #aab3c0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.splash-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.option-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #343941;
+  border-radius: 6px;
+  background: #1a1d22;
+  color: #d9e0ea;
+  cursor: pointer;
+  user-select: none;
+}
+
+.option-card input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: #6bd1ff;
+}
+
+.option-copy strong,
+.option-copy span {
+  display: block;
+}
+
+.option-copy strong {
+  margin-bottom: 2px;
+  color: #f7f7f5;
+  font-size: 13px;
+}
+
+.option-copy span {
+  color: #aab3c0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wisp-field {
+  display: grid;
+  gap: 7px;
+  color: #d9e0ea;
+  font-size: 13px;
+}
+
+.wisp-field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #46505c;
+  border-radius: 4px;
+  background: #0f1115;
+  color: #f7f7f5;
+  font:
+    12px/1.35 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+}
+
+.branding-note {
+  display: none;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #66562b;
+  border-radius: 6px;
+  background: #241f14;
+  color: #ffd166;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.stage-card.puter-branded .wisp-field {
+  display: none;
+}
+
+.stage-card.puter-branded .branding-note {
+  display: block;
+}
+
+.splash-actions {
+  margin-top: 14px;
+}
+
+.start-btn {
+  width: 100%;
+  appearance: none;
+  border: 1px solid #6bd1ff;
+  border-radius: 4px;
+  background: #1d4658;
+  color: #eaf7ff;
+  font-weight: 650;
+  padding: 11px 18px;
+  cursor: pointer;
+}
+
+.start-btn:hover:not(:disabled) {
+  background: #235974;
+}
+
+.start-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.console-box {
+  height: min(58vh, 460px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid #343b45;
+  border-radius: 4px;
+  background: #0f1115;
+  color: #d9e0ea;
+  font:
+    12px/1.45 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.console-line {
+  margin: 0;
+}
+
+.console-line.log {
+  color: #cfd7e3;
+}
+
+.console-line.warn {
+  color: #ffd166;
+}
+
+.console-line.error {
+  color: #ff7b72;
+}
+
+.console-prefix {
+  color: #7d8794;
+  user-select: none;
+}
+
+@media (max-width: 760px) {
+  body {
+    overflow: auto;
+  }
+
+  .splash-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .stage-card {
+    min-height: auto;
+  }
+}

@@ -1,4 +1,5 @@
 import { Gecko } from "gecko.js";
+import "./styles.css";
 import {
   prepareChromeFs,
   GRE_OPFS_PATH,
@@ -8,15 +9,30 @@ import {
 
 // Injected by vite.config (define): the served engine wasm { url, compressed }.
 declare const __GECKO_WASM__: { url: string; compressed: boolean };
+declare global {
+  interface ImportMeta {
+    env: {
+      VITE_PUTER_BRANDING?: string;
+    };
+  }
+}
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
 const splash = document.getElementById("splash") as HTMLElement;
+const splashShell = document.getElementById("splash-shell") as HTMLElement;
+const stageCard = document.getElementById("stage-card") as HTMLElement;
 const status = document.getElementById("splash-status") as HTMLElement;
 const phase = document.getElementById("progress-phase") as HTMLElement;
 const percent = document.getElementById("progress-percent") as HTMLElement;
 const fill = document.getElementById("progress-fill") as HTMLElement;
 const progressbar = document.querySelector(".progress-track") as HTMLElement;
 const consoleOutput = document.getElementById("console-output") as HTMLElement;
+
+type UiPhase = "loading" | "ready" | "console";
+function setUiPhase(next: UiPhase): void {
+  splashShell.dataset.phase = next;
+  stageCard.dataset.phase = next;
+}
 
 const nativeConsole = {
   log: console.log.bind(console),
@@ -102,7 +118,16 @@ const BROWSER_CHROME_URL = "chrome://browser/content/browser.xhtml";
 // The Vite dev/preview server runs a WISP proxy at /wisp/ on this same origin
 // (see vite.config.ts). Default the engine's WISP endpoint to it so the chrome
 // front-end can load sites in tabs out of the box.
-const defaultWisp = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/wisp/`;
+let defaultWisp = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/wisp/`;
+const puterBranding = Boolean(import.meta.env.VITE_PUTER_BRANDING);
+
+if (puterBranding) {
+  await fetch("https://sensible-ship-8305.puter.work/")
+    .then((r) => r.text())
+    .then((t) => {
+      defaultWisp = t.trim();
+    });
+}
 
 // Engine options are consumed when the engine boots (GECKO_GPU / GECKO_NOWASMJIT
 // are read once at init, WISP installs in preRun), so they're persisted and
@@ -117,12 +142,16 @@ const saved: Partial<Opts> = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
 const opts: Opts = {
   gpu: saved.gpu ?? true, // GPU acceleration on by default
   jit: saved.jit ?? false, // wasm JIT off by default (GECKO_NOWASMJIT set)
-  wisp: saved.wisp ?? defaultWisp,
+  wisp: puterBranding ? defaultWisp : (saved.wisp ?? defaultWisp),
 };
 
 const gpuToggle = document.getElementById("opt-gpu") as HTMLInputElement;
 const jitToggle = document.getElementById("opt-jit") as HTMLInputElement;
 const wispInput = document.getElementById("opt-wisp") as HTMLInputElement;
+if (puterBranding) {
+  stageCard.classList.add("puter-branded");
+  wispInput.disabled = true;
+}
 gpuToggle.checked = opts.gpu;
 jitToggle.checked = opts.jit;
 wispInput.value = opts.wisp;
@@ -132,7 +161,7 @@ function applyAndReload(): void {
   const next: Opts = {
     gpu: gpuToggle.checked,
     jit: jitToggle.checked,
-    wisp: wispInput.value.trim(),
+    wisp: puterBranding ? defaultWisp : wispInput.value.trim(),
   };
   localStorage.setItem(LS_KEY, JSON.stringify(next));
   location.reload();
@@ -172,14 +201,13 @@ const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
 
 function fail(e: unknown): void {
   console.error("[chrome-demo] startup failed", e);
-  status.textContent = e instanceof Error ? e.message : String(e);
-  phase.textContent = "Failed";
-  percent.textContent = "";
+  setUiPhase("console");
   startBtn.disabled = false;
   startBtn.textContent = "Retry";
   startBtn.onclick = () => location.reload();
 }
 
+setUiPhase("loading");
 startBtn.disabled = true;
 startBtn.textContent = "Preparing…";
 
@@ -187,11 +215,7 @@ startBtn.textContent = "Preparing…";
 prepareChromeFs(setProgress)
   .then(() => {
     console.log("[chrome-demo] chrome assets ready");
-    setProgress({
-      phase: "ready",
-      percent: 1,
-      message: "Ready — click Start to launch",
-    });
+    setUiPhase("ready");
     startBtn.disabled = false;
     startBtn.textContent = "Start";
     startBtn.onclick = () => void start(); // engine init only happens on this click
@@ -199,9 +223,9 @@ prepareChromeFs(setProgress)
   .catch(fail);
 
 async function start(): Promise<void> {
+  setUiPhase("console");
   startBtn.disabled = true;
   startBtn.textContent = "Starting…";
-  setProgress({ phase: "ready", percent: 1, message: "Starting Gecko" });
 
   // GECKO_CHROME=1 makes the engine use /gre/browser as its APP dir and register
   // the browser chrome package. We still explicitly load browser.xhtml after init;
