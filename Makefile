@@ -21,7 +21,7 @@
 
 ROOT        := $(CURDIR)
 FIREFOX_URL := https://github.com/MercuryWorkshop/firefox.git
-FIREFOX_REF := e874c4dd3a028d8ba7496310208187f43d7e8d18
+FIREFOX_REF := 2e1e835a5da5907e5ceef19aade58a7493f1e34d
 
 # Pinned, repo-local emscripten. `make emsdk` clones the emsdk meta-repo here,
 # installs + activates this version, and applies the WasmFS WISP-socket patches

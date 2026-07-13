@@ -130,8 +130,8 @@ if (puterBranding) {
 }
 
 // Engine options are consumed when the engine boots (GECKO_GPU / GECKO_NOWASMJIT
-// are read once at init, WISP installs in preRun), so they're persisted and
-// applied on reload rather than live -- mirroring embed-demo.
+// are read once at init, WISP installs in preRun). Init only happens on the
+// Start click, so the controls are read (and persisted) right then -- no reload.
 const LS_KEY = "chrome-demo-opts";
 interface Opts {
   gpu: boolean;
@@ -156,40 +156,40 @@ gpuToggle.checked = opts.gpu;
 jitToggle.checked = opts.jit;
 wispInput.value = opts.wisp;
 
-// Persist the current control values and restart the engine to apply them.
-function applyAndReload(): void {
+// Read the current control values, persisting them for the next visit.
+function collectOpts(): Opts {
   const next: Opts = {
     gpu: gpuToggle.checked,
     jit: jitToggle.checked,
     wisp: puterBranding ? defaultWisp : wispInput.value.trim(),
   };
   localStorage.setItem(LS_KEY, JSON.stringify(next));
-  location.reload();
+  return next;
 }
-gpuToggle.addEventListener("change", applyAndReload);
-jitToggle.addEventListener("change", applyAndReload);
-wispInput.addEventListener("change", applyAndReload); // fires on commit (Enter/blur), not per keystroke
 
 // GPU is presence-gated; with GPU on, also route content WebGL to a real host GL
 // context (GECKO_GL_PASSTHROUGH). The wasm JIT is on unless GECKO_NOWASMJIT is set.
-const optEnv: Record<string, string> = { GECKO_CHROME: "1" };
-if (opts.gpu) {
-  optEnv.GECKO_GPU = "1";
-  optEnv.GECKO_GL_PASSTHROUGH = "1";
-  // In-process WebRender display-list handoff (skip the content->compositor IPDL
-  // Pickle round-trip). Opt-in engine flag (GECKO_WR_DIRECT).
-  optEnv.GECKO_WR_DIRECT = "1";
-  // Async pan/zoom (correctly targets nested scroll containers via the
-  // GetDocument/SetTargetAPZC fix).
-  optEnv.GECKO_APZ = "1";
-}
-if (!opts.jit) optEnv.GECKO_NOWASMJIT = "1";
+function buildEnv(o: Opts): Record<string, string> {
+  const optEnv: Record<string, string> = { GECKO_CHROME: "1" };
+  if (o.gpu) {
+    optEnv.GECKO_GPU = "1";
+    optEnv.GECKO_GL_PASSTHROUGH = "1";
+    // In-process WebRender display-list handoff (skip the content->compositor IPDL
+    // Pickle round-trip). Opt-in engine flag (GECKO_WR_DIRECT).
+    optEnv.GECKO_WR_DIRECT = "1";
+    // Async pan/zoom (correctly targets nested scroll containers via the
+    // GetDocument/SetTargetAPZC fix).
+    optEnv.GECKO_APZ = "1";
+  }
+  if (!o.jit) optEnv.GECKO_NOWASMJIT = "1";
 
-// Generic `?env.FOO=bar` knob (mirrors embed-demo): forward arbitrary engine env
-// vars from the URL, e.g. ?env.GECKO_WASM_INTERP=1 to run content WebAssembly in
-// the in-process interpreter instead of the host passthrough.
-for (const [k, v] of new URLSearchParams(location.search)) {
-  if (k.startsWith("env.")) optEnv[k.slice(4)] = v;
+  // Generic `?env.FOO=bar` knob (mirrors embed-demo): forward arbitrary engine env
+  // vars from the URL, e.g. ?env.GECKO_WASM_INTERP=1 to run content WebAssembly in
+  // the in-process interpreter instead of the host passthrough.
+  for (const [k, v] of new URLSearchParams(location.search)) {
+    if (k.startsWith("env.")) optEnv[k.slice(4)] = v;
+  }
+  return optEnv;
 }
 
 // --- Eager asset prep, explicit-Start engine init -------------------------
@@ -198,17 +198,23 @@ for (const [k, v] of new URLSearchParams(location.search)) {
 // up the audio AudioWorklet, and the click is the user gesture browsers require
 // before audio (and other gesture-gated APIs) can start.
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
+// Navbar CTA: forwards to whatever the stage-card button currently does
+// (Start / Retry), and tracks its enabled state.
+const navLaunch = document.getElementById("nav-launch") as HTMLButtonElement;
+navLaunch.addEventListener("click", () => startBtn.click());
 
 function fail(e: unknown): void {
   console.error("[chrome-demo] startup failed", e);
   setUiPhase("console");
   startBtn.disabled = false;
+  navLaunch.disabled = false;
   startBtn.textContent = "Retry";
   startBtn.onclick = () => location.reload();
 }
 
 setUiPhase("loading");
 startBtn.disabled = true;
+navLaunch.disabled = true;
 startBtn.textContent = "Preparing…";
 
 // Eager: kicks off at module load, before any click.
@@ -217,6 +223,7 @@ prepareChromeFs(setProgress)
     console.log("[chrome-demo] chrome assets ready");
     setUiPhase("ready");
     startBtn.disabled = false;
+    navLaunch.disabled = false;
     startBtn.textContent = "Start";
     startBtn.onclick = () => void start(); // engine init only happens on this click
   })
@@ -225,7 +232,11 @@ prepareChromeFs(setProgress)
 async function start(): Promise<void> {
   setUiPhase("console");
   startBtn.disabled = true;
+  navLaunch.disabled = true;
   startBtn.textContent = "Starting…";
+
+  const chosen = collectOpts();
+  const optEnv = buildEnv(chosen);
 
   // GECKO_CHROME=1 makes the engine use /gre/browser as its APP dir and register
   // the browser chrome package. We still explicitly load browser.xhtml after init;
@@ -247,7 +258,7 @@ async function start(): Promise<void> {
     profile: PROFILE_OPFS_PATH,
     // The chrome UI itself boots from local files; loading sites in tabs goes
     // through the WISP endpoint (defaults to the dev server's /wisp/ proxy).
-    wispUrl: opts.wisp.trim() || undefined,
+    wispUrl: chosen.wisp.trim() || undefined,
     print: (s) => console.log("[gecko]", s),
     printErr: (s) => console.warn("[gecko]", s),
   });
