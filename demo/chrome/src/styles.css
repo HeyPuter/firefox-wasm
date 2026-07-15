@@ -229,7 +229,6 @@ input {
   height: 7px;
   border-radius: 999px;
   background: #1d49e7;
-  box-shadow: 0 0 0 3px rgba(29, 73, 231, 0.15);
 }
 
 /* Hidden while launching so it doesn't overlap the startup log. */
@@ -318,13 +317,11 @@ input {
   letter-spacing: 0.01em;
   padding: 16px 44px;
   cursor: pointer;
-  /* Soft animated gradient that drifts side to side, with a gentle breathing
-     glow -- reads as "live / clickable" without being loud. */
+  /* Soft animated gradient that drifts side to side -- reads as "live /
+     clickable" without being loud (and no shadow). */
   background: linear-gradient(120deg, #1d49e7, #4f74ff, #1d49e7);
   background-size: 220% 100%;
-  animation:
-    launch-drift 5s ease-in-out infinite,
-    launch-glow 2.8s ease-in-out infinite;
+  animation: launch-drift 5s ease-in-out infinite;
   transition:
     transform 0.15s ease,
     filter 0.15s ease;
@@ -337,16 +334,6 @@ input {
   }
   50% {
     background-position: 100% 50%;
-  }
-}
-
-@keyframes launch-glow {
-  0%,
-  100% {
-    box-shadow: 0 4px 16px rgba(29, 73, 231, 0.22);
-  }
-  50% {
-    box-shadow: 0 6px 28px rgba(29, 73, 231, 0.45);
   }
 }
 
@@ -365,7 +352,6 @@ input {
   /* Calm the button once it's disabled (loading / starting). */
   background: #1d49e7;
   animation: none;
-  box-shadow: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
