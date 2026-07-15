@@ -203,7 +203,8 @@ input {
 
 .project-copy {
   margin: 16px 0 0;
-  max-width: 46ch;
+  /* Wide enough that each sentence (split with <br>) sits on one line. */
+  max-width: 62ch;
   color: #6b7280;
   font-size: 17px;
   font-weight: 300;
