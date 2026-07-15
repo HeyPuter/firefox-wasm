@@ -21,7 +21,7 @@
 # MOZBUILD_STATE_PATH / EM_BINARYEN_ROOT / EMSDK.
 
 ROOT        := $(CURDIR)
-FIREFOX_URL := https://github.com/MercuryWorkshop/firefox.git
+FIREFOX_URL := https://github.com/HeyPuter/firefox.git
 FIREFOX_REF := 2e1e835a5da5907e5ceef19aade58a7493f1e34d
 
 # Pinned, repo-local emscripten. `make emsdk` clones the emsdk meta-repo here,
