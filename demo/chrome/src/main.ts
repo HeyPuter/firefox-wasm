@@ -12,8 +12,16 @@ declare global {
   interface ImportMeta {
     env: {
       VITE_PUTER_BRANDING?: string;
+      VITE_DISABLE_BRANDING?: string;
     };
   }
+}
+
+// VITE_DISABLE_BRANDING strips the Firefox logo (the hero image and the
+// favicon, which use the same artwork).
+if (import.meta.env.VITE_DISABLE_BRANDING) {
+  document.querySelector(".project-logo")?.remove();
+  document.getElementById("favicon")?.remove();
 }
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
@@ -116,8 +124,12 @@ const BROWSER_CHROME_URL = "chrome://browser/content/browser.xhtml";
 
 // The Vite dev/preview server runs a WISP proxy at /wisp/ on this same origin
 // (see vite.config.ts). Default the engine's WISP endpoint to it so the chrome
-// front-end can load sites in tabs out of the box.
-let defaultWisp = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/wisp/`;
+// front-end can load sites in tabs out of the box. Resolved RELATIVE to the
+// page URL (the build uses vite base './' so a deploy can live in any
+// subdirectory, with its wisp proxy next to it).
+const wispUrl = new URL("wisp/", location.href);
+wispUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+let defaultWisp = wispUrl.href;
 const puterBranding = Boolean(import.meta.env.VITE_PUTER_BRANDING);
 
 if (puterBranding) {
@@ -266,8 +278,14 @@ async function start(): Promise<void> {
     // Fill the viewport; a debounced window-resize listener keeps it in sync (below).
     width: window.innerWidth,
     height: window.innerHeight,
-    // __GECKO_WASM__ (injected by vite.config) is { url, compressed } for the served wasm.
-    wasm: __GECKO_WASM__,
+    // __GECKO_WASM__ (injected by vite.config) is { url, compressed } for the
+    // served wasm. The url is page-relative (vite base './'); absolutize it here
+    // since the engine's fetch may run where relative URLs don't resolve
+    // against the page (e.g. a worker).
+    wasm: {
+      url: new URL(__GECKO_WASM__.url, location.href).href,
+      compressed: __GECKO_WASM__.compressed,
+    },
     env: optEnv,
     // GRE: an FsProvider over the in-memory decompressed tar (consulted
     // provider-first for /gre, baked gecko.data as fallback). Profile:

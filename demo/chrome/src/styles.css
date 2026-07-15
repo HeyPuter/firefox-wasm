@@ -56,7 +56,11 @@ input {
 .hero-inner {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 760px) minmax(320px, 1fr);
+  /* Even 50/50 split that shrinks with the page: the hero is capped at half
+     the row (minus half the gap), so it is never wider than the panel; on very
+     wide screens it additionally caps at 760px and the panel takes the rest.
+     Below the 820px breakpoint the layout collapses to a single column. */
+  grid-template-columns: minmax(320px, min(760px, calc(50% - 28px))) minmax(320px, 1fr);
   gap: 56px;
   align-items: start;
 }
@@ -78,9 +82,42 @@ input {
   border-bottom: 1px solid rgba(209, 213, 219, 0.3);
 }
 
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .nav-brand {
   display: inline-flex;
   align-items: center;
+}
+
+.nav-brand-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #333;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  transition: opacity 0.15s cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+.nav-brand-label:hover {
+  opacity: 0.7;
+}
+
+.labs-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(29, 73, 231, 0.09);
+  color: #1d49e7;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .nav-brand img {
@@ -234,8 +271,10 @@ input {
 .stage-card {
   display: flex;
   flex-direction: column;
-  margin-top: 48px;
-  min-height: 520px;
+  /* Offset the card below the hero copy so the two columns don't read as
+     one top-aligned row. */
+  margin-top: 96px;
+  min-height: 440px;
   padding: 26px;
 }
 
@@ -307,10 +346,21 @@ input {
   font-variant-numeric: tabular-nums;
 }
 
+/* Vertical rhythm: 8px between everything inside a labeled group (heading,
+   description, cards, input), 16px between the groups themselves. */
 .splash-controls {
   display: grid;
-  gap: 12px;
+  gap: 16px;
   margin-top: 18px;
+}
+
+/* Same look as .wisp-field: a small heading over its controls. */
+.flags-group {
+  display: grid;
+  gap: 8px;
+  color: #333;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .option-card {
@@ -368,7 +418,7 @@ input {
 
 .wisp-field {
   display: grid;
-  gap: 7px;
+  gap: 8px;
   color: #333;
   font-size: 13px;
   font-weight: 500;
@@ -423,12 +473,13 @@ input {
 }
 
 .splash-actions {
+  display: flex;
+  justify-content: flex-start;
   margin-top: auto;
   padding-top: 14px;
 }
 
 .start-btn {
-  width: 100%;
   appearance: none;
   border: none;
   border-radius: 5px;
@@ -499,7 +550,7 @@ input {
   user-select: none;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 820px) {
   .hero {
     padding: 110px 20px 50px;
   }

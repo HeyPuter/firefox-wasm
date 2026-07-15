@@ -23,8 +23,10 @@ type ProgressCallback = (progress: ChromeAssetsProgress) => void;
 // as an in-memory FsProvider for `fs`: the engine consults it provider-first
 // for /gre, falling back to the baked gecko.data on a miss. Only the persistent
 // profile touches OPFS (PROFILE_OPFS_PATH, gecko.js's built-in OPFS provider).
-const ARCHIVE_URL = '/chrome-assets.tar.zst';
-const MANIFEST_URL = '/chrome-assets.json';
+// Page-relative (the build uses vite base './' so the site works from any
+// subdirectory; these live next to index.html in dist/).
+const ARCHIVE_URL = new URL('chrome-assets.tar.zst', location.href).href;
+const MANIFEST_URL = new URL('chrome-assets.json', location.href).href;
 // OPFS path for the persistent profile (gecko.js `profile` option).
 export const PROFILE_OPFS_PATH = 'profile';
 const REQUIRED_FILES = [

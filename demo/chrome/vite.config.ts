@@ -101,11 +101,16 @@ const coop = {
 
 // The served engine wasm -- whichever gecko.js built (raw gecko.wasm in debug, or
 // gecko.wasm.zst in release). Injected as __GECKO_WASM__ and passed to Gecko's required
-// `wasm` option in main.ts.
+// `wasm` option in main.ts. The url is RELATIVE to the page (main.ts absolutizes it).
 const wasmCompressed = fs.existsSync(path.join(libDist, 'gecko.wasm.zst'));
-const GECKO_WASM = { url: wasmCompressed ? '/gecko.wasm.zst' : '/gecko.wasm', compressed: wasmCompressed };
+const GECKO_WASM = { url: wasmCompressed ? 'gecko.wasm.zst' : 'gecko.wasm', compressed: wasmCompressed };
 
 export default defineConfig({
+  // Relative asset paths, so the built dist/ works served from any
+  // subdirectory, not just the site root (runtime-fetched assets -- the wasm,
+  // chrome-assets.tar.zst, the default wisp endpoint -- are resolved against
+  // the page URL in main.ts/chrome-fs.ts to match).
+  base: './',
   plugins: [serveEngine(), packageGreExtra(), wispProxy()],
   define: { __GECKO_WASM__: JSON.stringify(GECKO_WASM) },
   // gecko.js is a workspace package under active rebuild; don't pre-bundle/cache

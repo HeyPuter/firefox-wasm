@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>gecko.js — chrome demo</title>
+    <title>Firefox in WebAssembly</title>
+    <link id="favicon" rel="icon" type="image/webp" href="logo.webp" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -14,19 +15,29 @@
   <body>
     <section id="splash" aria-live="polite">
       <header class="top-nav">
-        <a
-          class="nav-brand"
-          href="https://puter.com"
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Puter"
-        >
-          <img
-            src="data:image/svg+xml,%3C%3Fxml%20version%3D%221.0%22%20encoding%3D%22utf-8%22%3F%3E%3Csvg%20x%3D%220px%22%20y%3D%220px%22%20width%3D%2248px%22%20height%3D%2248px%22%20viewBox%3D%220%200%2048%2048%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cg%20stroke-width%3D%222%22%20transform%3D%22matrix(0%2C%201%2C%20-1%2C%200%2C%2047.999504%2C%200.000014)%22%3E%3Cpolyline%20points%3D%2239%2024%2025%2024%2025%2028%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpolyline%20points%3D%2235.879%2010.121%2032%2014%2025%2014%2025%2018%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M13%2C26a10.29%2C10.29%2C0%2C0%2C1-7.2-3%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M17%2C31.6A5.826%2C5.826%2C0%2C0%2C1%2C13%2C26a5.731%2C5.731%2C0%2C0%2C1%2C2-4.4%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M35.879%2C37.879%2C32%2C34H25v2A9.9%2C9.9%2C0%2C0%2C1%2C15%2C46%2C9.9%2C9.9%2C0%2C0%2C1%2C5%2C36a9.058%2C9.058%2C0%2C0%2C1%2C.6-3.2A5.627%2C5.627%2C0%2C0%2C1%2C3%2C28a5.888%2C5.888%2C0%2C0%2C1%2C2.8-5A9.994%2C9.994%2C0%2C0%2C1%2C3%2C16%2C9.9%2C9.9%2C0%2C0%2C1%2C13%2C6h.4A5.826%2C5.826%2C0%2C0%2C1%2C19%2C2a5.893%2C5.893%2C0%2C0%2C1%2C6%2C6%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Ccircle%20cx%3D%2238%22%20cy%3D%228%22%20r%3D%223%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20data-color%3D%22color-2%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Ccircle%20cx%3D%2242%22%20cy%3D%2224%22%20r%3D%223%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20data-color%3D%22color-2%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Ccircle%20cx%3D%2238%22%20cy%3D%2240%22%20r%3D%223%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20data-color%3D%22color-2%22%20stroke-linejoin%3D%22miter%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"
-            alt="Puter"
-            height="30"
-          />
-        </a>
+        <div class="nav-left">
+          <a
+            class="nav-brand"
+            href="https://puter.com"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Puter"
+          >
+            <img
+              src="data:image/svg+xml,%3C%3Fxml%20version%3D%221.0%22%20encoding%3D%22utf-8%22%3F%3E%3Csvg%20x%3D%220px%22%20y%3D%220px%22%20width%3D%2248px%22%20height%3D%2248px%22%20viewBox%3D%220%200%2048%2048%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cg%20stroke-width%3D%222%22%20transform%3D%22matrix(0%2C%201%2C%20-1%2C%200%2C%2047.999504%2C%200.000014)%22%3E%3Cpolyline%20points%3D%2239%2024%2025%2024%2025%2028%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpolyline%20points%3D%2235.879%2010.121%2032%2014%2025%2014%2025%2018%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M13%2C26a10.29%2C10.29%2C0%2C0%2C1-7.2-3%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M17%2C31.6A5.826%2C5.826%2C0%2C0%2C1%2C13%2C26a5.731%2C5.731%2C0%2C0%2C1%2C2-4.4%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Cpath%20d%3D%22M35.879%2C37.879%2C32%2C34H25v2A9.9%2C9.9%2C0%2C0%2C1%2C15%2C46%2C9.9%2C9.9%2C0%2C0%2C1%2C5%2C36a9.058%2C9.058%2C0%2C0%2C1%2C.6-3.2A5.627%2C5.627%2C0%2C0%2C1%2C3%2C28a5.888%2C5.888%2C0%2C0%2C1%2C2.8-5A9.994%2C9.994%2C0%2C0%2C1%2C3%2C16%2C9.9%2C9.9%2C0%2C0%2C1%2C13%2C6h.4A5.826%2C5.826%2C0%2C0%2C1%2C19%2C2a5.893%2C5.893%2C0%2C0%2C1%2C6%2C6%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Ccircle%20cx%3D%2238%22%20cy%3D%228%22%20r%3D%223%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20data-color%3D%22color-2%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Ccircle%20cx%3D%2242%22%20cy%3D%2224%22%20r%3D%223%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20data-color%3D%22color-2%22%20stroke-linejoin%3D%22miter%22%2F%3E%3Ccircle%20cx%3D%2238%22%20cy%3D%2240%22%20r%3D%223%22%20fill%3D%22none%22%20stroke%3D%22%23444444%22%20stroke-linecap%3D%22square%22%20stroke-miterlimit%3D%2210%22%20stroke-width%3D%222%22%20data-color%3D%22color-2%22%20stroke-linejoin%3D%22miter%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"
+              alt="Puter"
+              height="30"
+            />
+          </a>
+          <a
+            class="nav-brand-label"
+            href="http://developer.puter.com/labs/"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Puter <span class="labs-badge">Labs</span>
+          </a>
+        </div>
         <div class="nav-links">
           <a
             class="nav-link"
@@ -34,7 +45,13 @@
             target="_blank"
             rel="noreferrer"
           >
-            <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor" aria-hidden="true">
+            <svg
+              viewBox="0 0 16 16"
+              width="18"
+              height="18"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path
                 d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
               />
@@ -55,9 +72,8 @@
             </h1>
             <p class="project-copy">
               This is the gecko engine compiled to WebAssembly, running the
-              actual firefox UI in a web browser. All js execution and
-              rendering is done inside webassembly, instead of the host
-              browser.
+              actual firefox UI in a web browser. All js execution and rendering
+              is done inside webassembly, instead of the host browser.
             </p>
             <div class="project-facts" aria-label="Project highlights">
               <div class="fact">
@@ -73,10 +89,7 @@
                 <span>Tabs load web content through a Wisp server.</span>
               </div>
             </div>
-            <section
-              class="startup-console"
-              aria-label="Startup console"
-            >
+            <section class="startup-console" aria-label="Startup console">
               <p class="phase-kicker">Startup log</p>
               <div
                 id="console-output"
@@ -87,90 +100,93 @@
             </section>
           </div>
 
-        <div id="stage-card" class="stage-card" data-phase="predownload">
-          <section
-            class="phase-section phase-predownload"
-            aria-label="Download browser assets"
-          >
-            <p class="phase-kicker">Phase 1</p>
-            <h2 class="phase-title">Download browser files</h2>
-            <p class="splash-status">
-              The Firefox user interface ships as a ~18&nbsp;MB download,
-              fetched fresh on every visit and served from memory.
-            </p>
-            <div class="splash-actions">
-              <button id="download-btn" type="button" class="start-btn">
-                Download
-              </button>
-            </div>
-          </section>
-
-          <section
-            class="phase-section phase-loading"
-            aria-label="Preparing browser assets"
-          >
-            <p class="phase-kicker">Phase 2</p>
-            <h2 class="phase-title">Preparing browser files</h2>
-            <p id="splash-status" class="splash-status">
-              Preparing chrome assets
-            </p>
-            <div
-              class="progress-track"
-              role="progressbar"
-              aria-valuemin="0"
-              aria-valuemax="100"
-              aria-valuenow="0"
+          <div id="stage-card" class="stage-card" data-phase="predownload">
+            <section
+              class="phase-section phase-predownload"
+              aria-label="Download browser assets"
             >
-              <div id="progress-fill" class="progress-fill"></div>
-            </div>
-            <div class="progress-meta">
-              <span id="progress-phase">Checking</span>
-              <span id="progress-percent">0%</span>
-            </div>
-          </section>
+              <p class="phase-kicker">Phase 1</p>
+              <h2 class="phase-title">Download browser files</h2>
+              <p class="splash-status">
+                The Firefox user interface ships as a ~18&nbsp;MB download,
+                fetched fresh on every visit and served from memory.
+              </p>
+              <div class="splash-actions">
+                <button id="download-btn" type="button" class="start-btn">
+                  Download
+                </button>
+              </div>
+            </section>
 
-          <section
-            class="phase-section phase-ready"
-            aria-label="Launch options"
-          >
-            <p class="phase-kicker">Phase 3</p>
-            <h2 class="phase-title">Launch options</h2>
-            <div class="splash-controls">
-              <label class="option-card">
-                <input type="checkbox" id="opt-gpu" />
-                <span class="option-copy">
-                  <strong>Use GPU acceleration</strong>
-                  <span>Uses webgl based rendering for web contents</span>
-                </span>
-              </label>
-              <label class="option-card">
-                <input type="checkbox" id="opt-jit" />
-                <span class="option-copy">
-                  <strong>Enable JIT</strong>
-                  <span>Experimental JS -> WASM JIT. Will be buggy</span>
-                </span>
-              </label>
-              <label class="wisp-field">
-                <span>Wisp server</span>
-                <span class="wisp-copy">
-                  Websocket proxy endpoint that tabs load web content through.
-                </span>
-                <input
-                  type="text"
-                  id="opt-wisp"
-                  spellcheck="false"
-                  autocomplete="off"
-                  aria-label="Wisp server"
-                />
-              </label>
-            </div>
-            <div class="splash-actions">
-              <button id="start-btn" type="button" class="start-btn">
-                Start
-              </button>
-            </div>
-          </section>
-        </div>
+            <section
+              class="phase-section phase-loading"
+              aria-label="Preparing browser assets"
+            >
+              <p class="phase-kicker">Phase 2</p>
+              <h2 class="phase-title">Preparing browser files</h2>
+              <p id="splash-status" class="splash-status">
+                Preparing chrome assets
+              </p>
+              <div
+                class="progress-track"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+              >
+                <div id="progress-fill" class="progress-fill"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progress-phase">Checking</span>
+                <span id="progress-percent">0%</span>
+              </div>
+            </section>
+
+            <section
+              class="phase-section phase-ready"
+              aria-label="Launch options"
+            >
+              <p class="phase-kicker">Phase 3</p>
+              <h2 class="phase-title">Launch options</h2>
+              <div class="splash-controls">
+                <div class="flags-group">
+                  <span>Flags</span>
+                  <label class="option-card">
+                    <input type="checkbox" id="opt-gpu" />
+                    <span class="option-copy">
+                      <strong>Use GPU acceleration</strong>
+                      <span>Uses webgl based rendering for web contents</span>
+                    </span>
+                  </label>
+                  <label class="option-card">
+                    <input type="checkbox" id="opt-jit" />
+                    <span class="option-copy">
+                      <strong>Enable JIT</strong>
+                      <span>Experimental JS -> WASM JIT. Will be buggy</span>
+                    </span>
+                  </label>
+                </div>
+                <label class="wisp-field">
+                  <span>Wisp server</span>
+                  <span class="wisp-copy">
+                    Websocket proxy endpoint that tabs load web content through.
+                  </span>
+                  <input
+                    type="text"
+                    id="opt-wisp"
+                    spellcheck="false"
+                    autocomplete="off"
+                    aria-label="Wisp server"
+                  />
+                </label>
+              </div>
+              <div class="splash-actions">
+                <button id="start-btn" type="button" class="start-btn">
+                  Start
+                </button>
+              </div>
+            </section>
+          </div>
         </div>
       </div>
     </section>
