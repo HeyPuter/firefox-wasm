@@ -1,9 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
 import { server as wisp } from '@mercuryworkshop/wisp-js/server';
 
 const require = createRequire(import.meta.url);
@@ -15,63 +13,16 @@ const mime = (n: string) =>
   n.endsWith('.wasm') ? 'application/wasm' :
     n.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
 
-// The GRE files live in the engine objdir's dist/bin. gecko.data is intentionally
-// stripped to stay minimal, so chrome-demo ships the same non-binary GRE resource
-// set that the old unstripped preload used, plus the Firefox browser/ app dir,
-// in public/chrome-assets.tar.zst. The runtime expands it into OPFS on first load
-// (see src/chrome-fs.ts).
-// The engine objdir's dist/bin. Defaults to the local debug objdir, but honors
-// $GECKO_OBJDIR so a RELEASE build (CI: obj-full-emscripten-release) can point here.
-const GRE_SRC = process.env.GECKO_OBJDIR
-  ? path.resolve(process.env.GECKO_OBJDIR, 'dist/bin')
-  : path.resolve(__dirname, '../../obj-full-emscripten/dist/bin');
-const FONT_SRC = path.resolve(__dirname, '../../firefox/toolkit/components/pdfjs/content/web/standard_fonts');
+// gecko.data is intentionally stripped to stay minimal, so chrome-demo ships the
+// non-binary GRE resource set plus the Firefox browser/ app dir in
+// public/chrome-assets.tar.zst. The archive is staged from the engine objdir by
+// the root Makefile's `chrome-assets` target (run automatically by `make
+// chrome-demo`); the runtime downloads and decompresses it into memory on every
+// page load and serves it to the engine as an in-memory FsProvider (see
+// src/chrome-fs.ts).
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 const ASSET_ARCHIVE = path.join(PUBLIC_DIR, 'chrome-assets.tar.zst');
 const ASSET_MANIFEST = path.join(PUBLIC_DIR, 'chrome-assets.json');
-const CLOBBER_FILE = path.join(PUBLIC_DIR, 'chrome-assets.clobber');
-const GRE_EXCLUDES = [
-  '*.so',
-  '*.wasm',
-  '*.a',
-  '*.data',
-  '*.dbg',
-  '*.symbols',
-  // Anchor the executable names to the rsync transfer ROOT (leading slash) so they
-  // drop only dist/bin/<exe>, NOT nested directories that share the name. A bare
-  // `firefox` matched any path component and wrongly excluded the devtools
-  // debugger's client/firefox/ (commands.js, create.js) and netmonitor's
-  // src/utils/firefox/ -> the debugger devtools panel was blank with "Missing chrome
-  // or resource URL: resource://devtools/client/debugger/src/client/firefox/commands.js".
-  '/firefox',
-  '/firefox-bin',
-  '/pingsender',
-  '/nsinstall',
-  '/nsinstall_real',
-];
-
-// Trim heavy, optional feature trees from the chrome bundle unless CHROME_FULL=1
-// (which ships the complete Firefox asset set). None are needed to boot or render
-// pages: hyphenation dicts (cosmetic line breaks) and spellcheck dicts.
-// chrome/remote (Remote Agent / CDP+WebDriver, ~720K) must ship: this build has
-// ENABLE_WEBDRIVER, so browser.js's gRemoteControl dereferences the Marionette
-// service on EVERY chrome-window load (gBrowserInit.onLoad -> updateVisualCue).
-// Excluding it left remote.manifest pointing at missing files -> the lazy service
-// getter failed -> `Marionette` undefined -> onLoad threw before registering
-// _delayedStartup, so PanelUI/BookmarkingUI/FullZoom etc. never initialized
-// (first symptom: hamburger menu "PanelUI.panel is undefined").
-// For pdf.js, keep the small integration modules in chrome/pdfjs/content/*.sys.mjs
-// (PdfjsContextMenu/PdfStreamConverter/PdfJs are eagerly imported -- e.g. by the
-// context-menu actor; dropping all of pdfjs broke right-click) and only drop the
-// heavy viewer UI + engine (content/web ~4.6 MB + content/build ~3 MB). PDF *viewing*
-// is disabled; PDFs download instead. (Excluded chrome.manifest entries remain, so a
-// feature only errors if actually invoked.) Together ~15 MB uncompressed off the tar.
-if (!process.env.CHROME_FULL) {
-  GRE_EXCLUDES.push(
-    '/chrome/pdfjs/content/web', '/chrome/pdfjs/content/build',
-    '/hyphenation', '/dictionaries',
-  );
-}
 
 function serveEngine(): Plugin {
   return {
@@ -99,67 +50,14 @@ function serveEngine(): Plugin {
   };
 }
 
-function newestMtimeMs(abs: string): number {
-  const st = fs.statSync(abs);
-  if (!st.isDirectory()) return st.mtimeMs;
-  let newest = st.mtimeMs;
-  for (const name of fs.readdirSync(abs)) {
-    newest = Math.max(newest, newestMtimeMs(path.join(abs, name)));
-  }
-  return newest;
-}
-
+// The archive is a build input, not something vite stages: just fail fast with a
+// pointer at the Makefile if it hasn't been generated (or is missing its manifest).
 function ensureChromeAssetsArchive(): void {
-  fs.mkdirSync(PUBLIC_DIR, { recursive: true });
-  if (!fs.existsSync(CLOBBER_FILE)) fs.writeFileSync(CLOBBER_FILE, '1\n');
-  if (!fs.existsSync(GRE_SRC)) {
-    throw new Error(`chrome-demo: missing ${GRE_SRC}; build the full emscripten objdir before starting chrome-demo`);
-  }
-  if (!fs.existsSync(FONT_SRC)) {
-    throw new Error(`chrome-demo: missing ${FONT_SRC}; Firefox source checkout is required for bundled fonts`);
-  }
-
-  const newestSource = Math.max(newestMtimeMs(GRE_SRC), newestMtimeMs(FONT_SRC));
-  const archiveMtime = fs.existsSync(ASSET_ARCHIVE) ? fs.statSync(ASSET_ARCHIVE).mtimeMs : 0;
-  const manifestMtime = fs.existsSync(ASSET_MANIFEST) ? fs.statSync(ASSET_MANIFEST).mtimeMs : 0;
-  const clobberMtime = fs.statSync(CLOBBER_FILE).mtimeMs;
-  if (archiveMtime >= newestSource && archiveMtime >= clobberMtime &&
-    manifestMtime >= newestSource && manifestMtime >= clobberMtime) return;
-
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-assets-'));
-  const tarPath = path.join(stage, 'chrome-assets.tar');
-  const tmp = `${ASSET_ARCHIVE}.tmp`;
-  try {
-    fs.rmSync(tmp, { force: true });
-    const rsync = spawnSync('rsync', [
-      '-aL',
-      ...GRE_EXCLUDES.flatMap((pattern) => [`--exclude=${pattern}`]),
-      `${GRE_SRC}/`,
-      `${stage}/`,
-    ], { stdio: 'inherit' });
-    if (rsync.status !== 0) throw new Error('chrome-demo: failed to stage GRE resources with rsync');
-
-    for (const dest of ['fonts', 'browser/fonts']) {
-      fs.mkdirSync(path.join(stage, dest), { recursive: true });
-      for (const name of fs.readdirSync(FONT_SRC)) {
-        if (name.endsWith('.ttf')) fs.copyFileSync(path.join(FONT_SRC, name), path.join(stage, dest, name));
-      }
-    }
-
-    const roots = fs.readdirSync(stage);
-    if (!roots.length) throw new Error('chrome-demo: staged asset tree is empty');
-    const tar = spawnSync('tar', ['-cf', tarPath, '-C', stage, ...roots], { stdio: 'inherit' });
-    if (tar.status !== 0) throw new Error('chrome-demo: failed to create chrome asset tar');
-    const uncompressedSize = fs.statSync(tarPath).size;
-    const zstd = spawnSync('zstd', ['-q', '-f', '-19', tarPath, '-o', tmp], { stdio: 'inherit' });
-    if (zstd.status !== 0) throw new Error('chrome-demo: failed to compress public/chrome-assets.tar.zst; install zstd');
-    fs.writeFileSync(ASSET_MANIFEST, JSON.stringify({ uncompressedSize }) + '\n');
-    fs.renameSync(tmp, ASSET_ARCHIVE);
-  } catch (e) {
-    fs.rmSync(tmp, { force: true });
-    throw e;
-  } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
+  if (!fs.existsSync(ASSET_ARCHIVE) || !fs.existsSync(ASSET_MANIFEST)) {
+    throw new Error(
+      'chrome-demo: missing public/chrome-assets.tar.zst (or its .json manifest); ' +
+      'stage it with `make chrome-assets` (run automatically by `make chrome-demo`)',
+    );
   }
 }
 

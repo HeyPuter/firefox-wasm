@@ -1,13 +1,9 @@
 import { ZSTDDecoder } from 'zstddec';
+import type { FsProvider, FsStat } from 'gecko.js';
 
-type OpfsDirectory = FileSystemDirectoryHandle;
-type OpfsFile = FileSystemFileHandle;
 export type ChromeAssetsProgressPhase =
-  | 'checking'
-  | 'cached'
   | 'downloading'
   | 'decompressing'
-  | 'unpacking'
   | 'ready';
 export interface ChromeAssetsProgress {
   phase: ChromeAssetsProgressPhase;
@@ -21,35 +17,27 @@ type ProgressCallback = (progress: ChromeAssetsProgress) => void;
 // gecko.js bakes the minimal GRE into gecko.data but EXCLUDES the Firefox
 // front-end (browser/), which the chrome build needs as its APP dir
 // (/gre/browser, selected by GECKO_CHROME=1). chrome-demo ships the pre-strip
-// non-binary GRE resources plus browser/ as a tar.zst and expands it into an OPFS
-// directory once per clobber version. We then just hand libxul that OPFS path as
-// `fs` (GRE_OPFS_PATH): libxul builds its built-in OPFS provider over it and
-// consults it provider-first for /gre, falling back to the baked gecko.data on a
-// miss. The persistent profile lives at PROFILE_OPFS_PATH (also a built-in OPFS
-// provider). No custom FsProvider needed.
+// non-binary GRE resources plus browser/ as a tar.zst, downloaded and
+// decompressed into memory on every page load. The tar is indexed (path ->
+// bytes view into the one decompressed buffer, zero-copy) and handed to libxul
+// as an in-memory FsProvider for `fs`: the engine consults it provider-first
+// for /gre, falling back to the baked gecko.data on a miss. Only the persistent
+// profile touches OPFS (PROFILE_OPFS_PATH, gecko.js's built-in OPFS provider).
 const ARCHIVE_URL = '/chrome-assets.tar.zst';
 const MANIFEST_URL = '/chrome-assets.json';
-const CLOBBER_URL = '/chrome-assets.clobber';
-// OPFS path passed to libxul as `fs`; the tar is extracted here (so /gre/<root>
-// resolves to OPFS gre/<root>). `profile` goes to a sibling OPFS dir.
-export const GRE_OPFS_PATH = 'gre';
+// OPFS path for the persistent profile (gecko.js `profile` option).
 export const PROFILE_OPFS_PATH = 'profile';
-const OPFS_DIR = GRE_OPFS_PATH;
-const VERSION_FILE = '.chrome-assets-version';
 const REQUIRED_FILES = [
   'fonts/LiberationSans-Regular.ttf',
   'browser/fonts/LiberationSans-Regular.ttf',
   'browser/chrome.manifest',
-  // Eagerly loaded by the context-menu actor (resource://pdf.js/PdfjsContextMenu.sys.mjs).
-  // Listing it forces re-extraction of any stale OPFS tree that predates the pdfjs trim
-  // (e.g. extracted while the tar still excluded all of chrome/pdfjs), even if the
-  // clobber version happens to match -- otherwise right-click throws "Failed to load".
+  // Eagerly loaded by the context-menu actor (resource://pdf.js/PdfjsContextMenu.sys.mjs);
+  // a tar that predates the pdfjs trim would make right-click throw "Failed to load".
   'chrome/pdfjs/content/PdfjsContextMenu.sys.mjs',
 ];
 
 const textDecoder = new TextDecoder();
-const textEncoder = new TextEncoder();
-let ready: Promise<OpfsDirectory> | undefined;
+let ready: Promise<FsProvider> | undefined;
 
 function report(progress: ProgressCallback | undefined, update: ChromeAssetsProgress): void {
   progress?.(update);
@@ -57,57 +45,6 @@ function report(progress: ProgressCallback | undefined, update: ChromeAssetsProg
 
 async function yieldToBrowser(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-async function getRoot(): Promise<OpfsDirectory> {
-  if (!navigator.storage?.getDirectory) {
-    throw new Error('chrome-fs: OPFS is unavailable in this browser');
-  }
-  const storage = await navigator.storage.getDirectory();
-  return storage.getDirectoryHandle(OPFS_DIR, { create: true });
-}
-
-async function readTextFile(dir: OpfsDirectory, name: string): Promise<string | undefined> {
-  try {
-    return await (await (await dir.getFileHandle(name)).getFile()).text();
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'NotFoundError') return undefined;
-    throw e;
-  }
-}
-
-async function fileExists(root: OpfsDirectory, path: string): Promise<boolean> {
-  try {
-    await fileForPath(root, path);
-    return true;
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'NotFoundError') return false;
-    throw e;
-  }
-}
-
-async function hasRequiredFiles(root: OpfsDirectory): Promise<boolean> {
-  for (const path of REQUIRED_FILES) {
-    if (!(await fileExists(root, path))) return false;
-  }
-  return true;
-}
-
-async function writeFile(dir: OpfsDirectory, path: string, data: Uint8Array | string): Promise<void> {
-  const parts = path.split('/').filter(Boolean);
-  const name = parts.pop();
-  if (!name) return;
-  let cur = dir;
-  for (const part of parts) cur = await cur.getDirectoryHandle(part, { create: true });
-  const out = await (await cur.getFileHandle(name, { create: true })).createWritable();
-  await out.write(typeof data === 'string' ? textEncoder.encode(data) : data);
-  await out.close();
-}
-
-async function fetchText(url: string): Promise<string> {
-  const r = await fetch(url, { cache: 'no-store' });
-  if (!r.ok) throw new Error(`chrome-fs: ${url} -> HTTP ${r.status}`);
-  return (await r.text()).trim();
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -209,11 +146,37 @@ function isEmptyBlock(bytes: Uint8Array, offset: number): boolean {
   return true;
 }
 
-async function extractTarToOpfs(bytes: Uint8Array, dir: OpfsDirectory, progress?: ProgressCallback): Promise<void> {
+interface TarIndex {
+  // path -> subarray view into the decompressed tar (zero-copy).
+  files: Map<string, Uint8Array>;
+  // dir path ('' = root) -> child entry names.
+  dirs: Map<string, Set<string>>;
+}
+
+// Register `parts` (a file or dir path) into the directory tree, creating
+// implicit parents (tars don't always carry explicit dir entries).
+function addToTree(dirs: Map<string, Set<string>>, parts: string[], isDir: boolean): void {
+  let dir = '';
+  for (let i = 0; i < parts.length; i++) {
+    const isLast = i === parts.length - 1;
+    let children = dirs.get(dir);
+    if (!children) {
+      children = new Set();
+      dirs.set(dir, children);
+    }
+    children.add(parts[i]);
+    if (isLast && !isDir) break;
+    dir = dir ? `${dir}/${parts[i]}` : parts[i];
+    if (isLast && !dirs.has(dir)) dirs.set(dir, new Set());
+  }
+}
+
+function indexTar(bytes: Uint8Array): TarIndex {
+  const files = new Map<string, Uint8Array>();
+  const dirs = new Map<string, Set<string>>([['', new Set()]]);
   let offset = 0;
   let pax: Record<string, string> | undefined;
   let longName: string | undefined;
-  let files = 0;
 
   while (offset + 512 <= bytes.length && !isEmptyBlock(bytes, offset)) {
     const type = String.fromCharCode(bytes[offset + 156] || 0);
@@ -236,84 +199,61 @@ async function extractTarToOpfs(bytes: Uint8Array, dir: OpfsDirectory, progress?
       pax = parsePax(data);
     } else if (type === 'L') {
       longName = parseTarString(data, 0, data.length);
-    } else if (type === '0' || type === '\0' || type === '') {
-      await writeFile(dir, name, data);
-      files++;
-    } else if (type === '5') {
-      let cur = dir;
-      for (const part of parts) cur = await cur.getDirectoryHandle(part, { create: true });
+    } else if (parts.length && (type === '0' || type === '\0' || type === '')) {
+      files.set(parts.join('/'), data);
+      addToTree(dirs, parts, false);
+    } else if (parts.length && type === '5') {
+      addToTree(dirs, parts, true);
     }
 
     offset = dataStart + Math.ceil(size / 512) * 512;
-    report(progress, {
-      phase: 'unpacking',
-      loaded: offset,
-      total: bytes.length,
-      percent: offset / bytes.length,
-      message: `Unpacking chrome assets (${files} files)`,
-    });
   }
+  return { files, dirs };
 }
 
-async function installAssets(progress?: ProgressCallback): Promise<OpfsDirectory> {
-  report(progress, { phase: 'checking', message: 'Checking chrome assets' });
-  const version = await fetchText(CLOBBER_URL);
-  if (!navigator.storage?.getDirectory) {
-    throw new Error('chrome-fs: OPFS is unavailable in this browser');
-  }
-  const storage = await navigator.storage.getDirectory();
-  const current = await getRoot();
-  const installedVersion = await readTextFile(current, VERSION_FILE);
-  if (installedVersion?.trim() === version && await hasRequiredFiles(current)) {
-    report(progress, { phase: 'cached', percent: 1, message: 'Chrome assets ready' });
-    report(progress, { phase: 'ready', percent: 1, message: 'Starting Gecko' });
-    return current;
-  }
+const normalizePath = (p: string) => p.split('/').filter(Boolean).join('/');
 
-  report(progress, { phase: 'checking', message: 'Clearing stale chrome assets' });
-  await storage.removeEntry(OPFS_DIR, { recursive: true }).catch((e) => {
-    if (!(e instanceof DOMException && e.name === 'NotFoundError')) throw e;
-  });
+function makeProvider(index: TarIndex): FsProvider {
+  return {
+    async stat(path: string): Promise<FsStat | null> {
+      const p = normalizePath(path);
+      const file = index.files.get(p);
+      if (file) return { size: file.byteLength, isDir: false };
+      if (index.dirs.has(p)) return { size: 0, isDir: true };
+      return null;
+    },
+    async readdir(path: string): Promise<string[]> {
+      const children = index.dirs.get(normalizePath(path));
+      if (!children) throw new Error(`chrome-fs: no such directory ${path}`);
+      return [...children];
+    },
+    async readFile(path: string): Promise<Uint8Array> {
+      const file = index.files.get(normalizePath(path));
+      if (!file) throw new Error(`chrome-fs: no such file ${path}`);
+      return file;
+    },
+  };
+}
 
-  const fresh = await getRoot();
+async function installAssets(progress?: ProgressCallback): Promise<FsProvider> {
   const decoder = new ZSTDDecoder();
   await decoder.init();
   const manifest = await fetchJson<{ uncompressedSize: number }>(MANIFEST_URL);
   const archive = await fetchBytes(ARCHIVE_URL, progress);
-  report(progress, { phase: 'decompressing', message: 'Decompressing chrome assets' });
+  report(progress, { phase: 'decompressing', percent: 1, message: 'Decompressing chrome assets' });
   await yieldToBrowser();
   const tar = decoder.decode(archive, manifest.uncompressedSize);
-  await extractTarToOpfs(tar, fresh, progress);
-  if (!(await hasRequiredFiles(fresh))) {
-    throw new Error('chrome-fs: unpacked chrome assets are missing required files');
+  const index = indexTar(tar);
+  for (const path of REQUIRED_FILES) {
+    if (!index.files.has(path)) {
+      throw new Error(`chrome-fs: chrome assets are missing required file ${path}`);
+    }
   }
-  await writeFile(fresh, VERSION_FILE, `${version}\n`);
   report(progress, { phase: 'ready', percent: 1, message: 'Starting Gecko' });
-  return fresh;
+  return makeProvider(index);
 }
 
-async function getInstalledRoot(progress?: ProgressCallback): Promise<OpfsDirectory> {
+export async function prepareChromeFs(progress?: ProgressCallback): Promise<FsProvider> {
   ready ??= installAssets(progress);
-  const root = await ready;
-  report(progress, { phase: 'ready', percent: 1, message: 'Starting Gecko' });
-  return root;
-}
-
-export async function prepareChromeFs(progress?: ProgressCallback): Promise<void> {
-  await getInstalledRoot(progress);
-}
-
-async function directoryForPath(root: OpfsDirectory, path: string): Promise<OpfsDirectory> {
-  let cur = root;
-  for (const part of path.split('/').filter(Boolean)) {
-    cur = await cur.getDirectoryHandle(part);
-  }
-  return cur;
-}
-
-async function fileForPath(root: OpfsDirectory, path: string): Promise<OpfsFile> {
-  const parts = path.split('/').filter(Boolean);
-  const name = parts.pop();
-  if (!name) throw new Error(`chrome-fs: invalid file path ${path}`);
-  return (await directoryForPath(root, parts.join('/'))).getFileHandle(name);
+  return ready;
 }

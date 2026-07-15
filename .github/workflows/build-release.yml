@@ -5,6 +5,10 @@ name: build-and-release
 # to a GitHub Release. (embed-xul/ + embed-chrome/ are legacy stubs and are NOT built
 # here -- the maintained package is gecko.js/.)
 #
+# Releases: every master push replaces the rolling `latest` prerelease; bumping
+# gecko.js/package.json "version" on master also tags + publishes v<version>;
+# pushing a v* tag by hand still publishes a release for that tag.
+#
 # !!! HEAVY BUILD — READ FIRST !!!
 # A full Gecko->wasm build is enormous: ~26 GB objdir, a ~3.4 GB (relocatable) libxul.so,
 # a ~245 MB gecko.wasm, and 25-50 min on 12 cores. On a standard hosted runner
@@ -25,11 +29,18 @@ name: build-and-release
 
 on:
   push:
+    branches: ['master']
     tags: ['v*']
   workflow_dispatch:
 
 permissions:
-  contents: write   # create releases / upload assets
+  contents: write   # create releases / upload assets / push tags
+
+# One build at a time per ref; a new master push supersedes the running one
+# (the build is hours long on this runner -- don't queue stale builds).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   EMSDK_VERSION: '6.0.1'         # emcc 6.0.1 / clang 23 (bundles binaryen v130)
@@ -45,6 +56,30 @@ jobs:
     steps:
       - name: Checkout the embedder + build harness (this repo)
         uses: actions/checkout@v4
+
+      # Release naming + auto-tag decision. Artifacts are named after the pushed
+      # tag, or after the gecko.js package version for branch pushes (which feed
+      # the rolling `latest` prerelease + the auto version release below).
+      # `new_version` is true when no v<version> tag exists yet -- bumping
+      # gecko.js/package.json "version" on master is what cuts a versioned release.
+      - name: Compute the release version/tag
+        id: version
+        run: |
+          PKG_VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' gecko.js/package.json | head -1)
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${PKG_VERSION}"
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v${PKG_VERSION}" >/dev/null 2>&1; then
+            NEW_VERSION=false
+          else
+            NEW_VERSION=true
+          fi
+          echo "version=${PKG_VERSION}"    >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"                >> "$GITHUB_OUTPUT"
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo ">> version=${PKG_VERSION} tag=${TAG} new_version=${NEW_VERSION}"
 
       # - name: Free up disk space (Gecko objdir is ~26 GB)
       #   uses: jlumbroso/free-disk-space@main
@@ -177,36 +212,38 @@ jobs:
           Must be served cross-origin-isolated (COOP: same-origin + COEP: require-corp) for SharedArrayBuffer.
           See README / the embed-demo for usage: `new Gecko({ canvas, wispUrl }); await g.init(); g.load(url)`.
           TXT
-          tar -C stage -czf gecko.js-${{ github.ref_name }}.tar.gz gecko.js
+          tar -C stage -czf gecko.js-${{ steps.version.outputs.tag }}.tar.gz gecko.js
           ls -la gecko.js-*.tar.gz
 
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: gecko.js-${{ github.ref_name }}
+          name: gecko.js-${{ steps.version.outputs.tag }}
           path: gecko.js-*.tar.gz
           if-no-files-found: error
 
       # Build the chrome-demo as a static Vite site (the full Firefox front-end demo).
       # Runs AFTER the gecko.js artifact upload so that primary artifact is published
-      # even if the demo build trips. The demo's vite config stages the GRE resource set
-      # from the engine objdir via rsync into public/chrome-assets.tar.zst and emits the
-      # served gecko.wasm[.zst]; GECKO_OBJDIR points it at the RELEASE objdir (its default
-      # is the local debug objdir). gecko.js (workspace dep) + node_modules already exist
-      # from `make libxul` above. NOTE: chrome-demo/dist is a static site that still must
-      # be served cross-origin-isolated (COOP/COEP) WITH a WISP proxy at /wisp (the demo's
+      # even if the demo build trips. `make chrome-assets` stages the GRE resource set
+      # from the engine objdir via rsync into public/chrome-assets.tar.zst; the vite
+      # build then emits the served gecko.wasm[.zst]. GECKO_OBJDIR points the staging
+      # at the RELEASE objdir (its default is the local debug objdir). gecko.js
+      # (workspace dep) + node_modules already exist from `make libxul` above.
+      # NOTE: chrome-demo/dist is a static site that still must be served
+      # cross-origin-isolated (COOP/COEP) WITH a WISP proxy at /wisp (the demo's
       # dev/preview server provides both; a plain static host does not).
       - name: Build the chrome-demo (static Vite build)
         run: |
           export GECKO_OBJDIR="${{ github.workspace }}/obj-full-emscripten-release"
+          make chrome-assets
           VITE_PUTER_BRANDING=1 pnpm --filter chrome-demo build
-          tar -C demo/chrome -czf chrome-demo-${{ github.ref_name }}.tar.gz dist
+          tar -C demo/chrome -czf chrome-demo-${{ steps.version.outputs.tag }}.tar.gz dist
           ls -la chrome-demo-*.tar.gz
 
       - name: Upload chrome-demo artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: chrome-demo-${{ github.ref_name }}
+          name: chrome-demo-${{ steps.version.outputs.tag }}
           path: chrome-demo-*.tar.gz
           if-no-files-found: error
 
@@ -218,3 +255,38 @@ jobs:
             gecko.js-*.tar.gz
             chrome-demo-*.tar.gz
           generate_release_notes: true
+
+      # --- rolling `latest` + auto version tag (master pushes) ---------------
+      # anuraOS-style continuous releases: every master build replaces the
+      # `latest` prerelease (delete + recreate so the tag always points at this
+      # commit), and bumping gecko.js/package.json "version" additionally cuts a
+      # permanent v<version> tag + release from the same artifacts.
+      - name: Delete the previous rolling release + tag
+        if: github.ref == 'refs/heads/master'
+        uses: dev-drprasad/delete-tag-and-release@v1.0.1
+        with:
+          delete_release: true
+          tag_name: latest
+          github_token: ${{ github.token }}
+
+      - name: Publish the rolling `latest` prerelease
+        if: github.ref == 'refs/heads/master'
+        uses: ncipollo/release-action@v1
+        with:
+          name: Continuous Build
+          tag: latest
+          commit: ${{ github.sha }}
+          body: "${{ github.event.head_commit.url }} ${{ github.event.head_commit.message }}"
+          artifacts: 'gecko.js-*.tar.gz,chrome-demo-*.tar.gz'
+          prerelease: true
+
+      - name: Tag + release ${{ steps.version.outputs.tag }} (version bumped)
+        if: github.ref == 'refs/heads/master' && steps.version.outputs.new_version == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ steps.version.outputs.version }}
+          tag: v${{ steps.version.outputs.version }}
+          commit: ${{ github.sha }}
+          body: "${{ github.event.head_commit.url }} ${{ github.event.head_commit.message }}"
+          artifacts: 'gecko.js-*.tar.gz,chrome-demo-*.tar.gz'
+          generateReleaseNotes: true

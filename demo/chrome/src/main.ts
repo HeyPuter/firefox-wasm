@@ -1,8 +1,7 @@
-import { Gecko } from "gecko.js";
+import { Gecko, type FsProvider } from "gecko.js";
 import "./styles.css";
 import {
   prepareChromeFs,
-  GRE_OPFS_PATH,
   PROFILE_OPFS_PATH,
   type ChromeAssetsProgress,
 } from "./chrome-fs";
@@ -28,7 +27,7 @@ const fill = document.getElementById("progress-fill") as HTMLElement;
 const progressbar = document.querySelector(".progress-track") as HTMLElement;
 const consoleOutput = document.getElementById("console-output") as HTMLElement;
 
-type UiPhase = "loading" | "ready" | "console";
+type UiPhase = "predownload" | "loading" | "ready" | "console";
 function setUiPhase(next: UiPhase): void {
   splashShell.dataset.phase = next;
   stageCard.dataset.phase = next;
@@ -192,16 +191,24 @@ function buildEnv(o: Opts): Record<string, string> {
   return optEnv;
 }
 
-// --- Eager asset prep, explicit-Start engine init -------------------------
-// Chrome assets download + extract into OPFS EAGERLY on page load (driving the
-// progress bar). Only the emscripten/Gecko init is gated behind Start: it spins
-// up the audio AudioWorklet, and the click is the user gesture browsers require
-// before audio (and other gesture-gated APIs) can start.
+// --- Download-gated asset prep, explicit-Start engine init ----------------
+// The panel walks three explicit stages: a pre-download phase (nothing fetched
+// yet -- the ~18 MB asset download only begins on the Download click), the
+// download/decompress progress bar, then the launch options. The emscripten/
+// Gecko init is gated behind Start: it spins up the audio AudioWorklet, and the
+// click is the user gesture browsers require before audio (and other
+// gesture-gated APIs) can start.
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
-// Navbar CTA: forwards to whatever the stage-card button currently does
-// (Start / Retry), and tracks its enabled state.
+const downloadBtn = document.getElementById(
+  "download-btn",
+) as HTMLButtonElement;
+// Navbar CTA: forwards to whatever action the panel currently offers
+// (Download / Start / Retry), and tracks its enabled state.
 const navLaunch = document.getElementById("nav-launch") as HTMLButtonElement;
-navLaunch.addEventListener("click", () => startBtn.click());
+navLaunch.addEventListener("click", () => {
+  if (splashShell.dataset.phase === "predownload") downloadBtn.click();
+  else startBtn.click();
+});
 
 function fail(e: unknown): void {
   console.error("[chrome-demo] startup failed", e);
@@ -212,27 +219,37 @@ function fail(e: unknown): void {
   startBtn.onclick = () => location.reload();
 }
 
-setUiPhase("loading");
+setUiPhase("predownload");
 startBtn.disabled = true;
-navLaunch.disabled = true;
-startBtn.textContent = "Preparing…";
+navLaunch.disabled = false;
 
-// Eager: kicks off at module load, before any click.
-prepareChromeFs(setProgress)
-  .then(() => {
-    console.log("[chrome-demo] chrome assets ready");
-    setUiPhase("ready");
-    startBtn.disabled = false;
-    navLaunch.disabled = false;
-    startBtn.textContent = "Start";
-    startBtn.onclick = () => void start(); // engine init only happens on this click
-  })
-  .catch(fail);
+// Resolves to the in-memory tar FsProvider handed to gecko.init() as `fs` on
+// Start; assigned when the Download click kicks off prepareChromeFs.
+let chromeFsReady: Promise<FsProvider> | undefined;
+
+downloadBtn.onclick = () => {
+  downloadBtn.disabled = true;
+  navLaunch.disabled = true;
+  setUiPhase("loading");
+  chromeFsReady = prepareChromeFs(setProgress);
+  chromeFsReady
+    .then(() => {
+      console.log("[chrome-demo] chrome assets ready");
+      setUiPhase("ready");
+      startBtn.disabled = false;
+      navLaunch.disabled = false;
+      startBtn.onclick = () => void start(); // engine init only happens on this click
+    })
+    .catch(fail);
+};
 
 async function start(): Promise<void> {
   setUiPhase("console");
   startBtn.disabled = true;
   navLaunch.disabled = true;
+  gpuToggle.disabled = true;
+  jitToggle.disabled = true;
+  wispInput.disabled = true;
   startBtn.textContent = "Starting…";
 
   const chosen = collectOpts();
@@ -241,8 +258,9 @@ async function start(): Promise<void> {
   // GECKO_CHROME=1 makes the engine use /gre/browser as its APP dir and register
   // the browser chrome package. We still explicitly load browser.xhtml after init;
   // that load is what creates the top-level Firefox chrome window.
-  // The chrome assets are already installed into OPFS (eager prep above), so
-  // gecko.init() only reads them from local browser storage.
+  // The chrome assets are already downloaded + decompressed into memory (the
+  // Download phase above), so gecko.init() reads them straight from the
+  // in-memory tar.
   const gecko = new Gecko({
     canvas,
     // Fill the viewport; a debounced window-resize listener keeps it in sync (below).
@@ -251,10 +269,11 @@ async function start(): Promise<void> {
     // __GECKO_WASM__ (injected by vite.config) is { url, compressed } for the served wasm.
     wasm: __GECKO_WASM__,
     env: optEnv,
-    // GRE: the extracted tar lives at OPFS `${GRE_OPFS_PATH}`; libxul builds its
-    // built-in OPFS provider over it (consulted provider-first for /gre, baked
-    // gecko.data as fallback). Profile: persistent OPFS at `${PROFILE_OPFS_PATH}`.
-    fs: GRE_OPFS_PATH,
+    // GRE: an FsProvider over the in-memory decompressed tar (consulted
+    // provider-first for /gre, baked gecko.data as fallback). Profile:
+    // persistent OPFS at `${PROFILE_OPFS_PATH}`.
+    // start() is only reachable once the download phase resolved chromeFsReady.
+    fs: await chromeFsReady!,
     profile: PROFILE_OPFS_PATH,
     // The chrome UI itself boots from local files; loading sites in tabs goes
     // through the WISP endpoint (defaults to the dev server's /wisp/ proxy).

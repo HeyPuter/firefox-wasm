@@ -61,14 +61,6 @@ input {
   align-items: start;
 }
 
-.hero-inner[data-phase="console"] {
-  grid-template-columns: 1fr;
-}
-
-.hero-inner[data-phase="console"] .hero-text {
-  display: none;
-}
-
 .top-nav {
   position: fixed;
   top: 0;
@@ -240,6 +232,8 @@ input {
 }
 
 .stage-card {
+  display: flex;
+  flex-direction: column;
   margin-top: 48px;
   min-height: 520px;
   padding: 26px;
@@ -249,10 +243,17 @@ input {
   display: none;
 }
 
+/* The console phase keeps the launch options on screen (disabled/greyed via
+   the controls' disabled state); the startup log lives in the hero column.
+   The visible section is a flex column filling the card so .splash-actions
+   (the Download/Start button) pins to the bottom via margin-top: auto. */
+.stage-card[data-phase="predownload"] .phase-predownload,
 .stage-card[data-phase="loading"] .phase-loading,
 .stage-card[data-phase="ready"] .phase-ready,
-.stage-card[data-phase="console"] .phase-console {
-  display: block;
+.stage-card[data-phase="console"] .phase-ready {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 .phase-kicker {
@@ -309,6 +310,7 @@ input {
 .splash-controls {
   display: grid;
   gap: 12px;
+  margin-top: 18px;
 }
 
 .option-card {
@@ -338,6 +340,13 @@ input {
   accent-color: #1d49e7;
 }
 
+/* Grey out the launch controls once the engine is starting (inputs disabled). */
+.option-card:has(input:disabled),
+.wisp-field:has(input:disabled) {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .option-copy strong,
 .option-copy span {
   display: block;
@@ -363,6 +372,13 @@ input {
   color: #333;
   font-size: 13px;
   font-weight: 500;
+}
+
+.wisp-copy {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.4;
 }
 
 .wisp-field input {
@@ -407,7 +423,8 @@ input {
 }
 
 .splash-actions {
-  margin-top: 14px;
+  margin-top: auto;
+  padding-top: 14px;
 }
 
 .start-btn {
@@ -432,8 +449,19 @@ input {
   cursor: default;
 }
 
+/* Startup log: lives under the hero copy, only shown while the engine boots. */
+.startup-console {
+  display: none;
+  max-width: 760px;
+  margin-top: 40px;
+}
+
+.hero-inner[data-phase="console"] .startup-console {
+  display: block;
+}
+
 .console-box {
-  height: min(58vh, 460px);
+  height: min(40vh, 340px);
   overflow: auto;
   padding: 12px 15px;
   border: 1px solid #eaebee;

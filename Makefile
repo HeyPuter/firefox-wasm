@@ -6,6 +6,7 @@
 #   make configure  force a reconfigure (needed after changing configure inputs outside CONFIGURE_INPUTS, e.g. re-checked-out firefox/)
 #   make libxul     build the gecko.js package: engine artifacts + the rspack ESM bundle (default)
 #   make embed-demo / make chrome-demo   build the library, then run its Vite demo
+#   make chrome-assets   stage demo/chrome's GRE asset archive from the objdir
 #   make run        alias for embed-demo (build + serve the basic embed demo)
 #   make web        alias for libxul (back-compat)
 #   make clean      remove the gecko.js build outputs
@@ -76,7 +77,7 @@ LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 CONFIGURE_INPUTS := $(MOZCONFIG) $(EM_CONFIG)
 
 .PHONY: all release firefox vendor configure build web run clean distclean \
-        libxul embed-demo chrome-demo emsdk
+        libxul embed-demo chrome-demo chrome-assets emsdk
 
 all: libxul
 
@@ -160,11 +161,96 @@ libxul: $(EMSDK_STAMP)
 	pnpm install
 	pnpm --filter gecko.js run build
 
+# --- chrome-demo asset archive ---------------------------------------------
+# gecko.data is intentionally stripped to stay minimal, so chrome-demo ships the
+# non-binary GRE resource set from the engine objdir plus the Firefox browser/
+# app dir as demo/chrome/public/chrome-assets.tar.zst (+ chrome-assets.json
+# carrying the uncompressed size, which the in-browser zstd decode needs up
+# front). The runtime downloads it and serves it to the engine from memory
+# (demo/chrome/src/chrome-fs.ts). Skips when nothing under the sources is newer
+# than the archive. Honors GECKO_OBJDIR (default: $(OBJDIR)) and CHROME_FULL=1.
+CHROME_OBJDIR   := $(or $(GECKO_OBJDIR),$(OBJDIR))
+CHROME_GRE_SRC  := $(CHROME_OBJDIR)/dist/bin
+CHROME_FONT_SRC := $(ROOT)/firefox/toolkit/components/pdfjs/content/web/standard_fonts
+CHROME_PUBLIC   := demo/chrome/public
+CHROME_ARCHIVE  := $(CHROME_PUBLIC)/chrome-assets.tar.zst
+CHROME_MANIFEST := $(CHROME_PUBLIC)/chrome-assets.json
+
+CHROME_EXCLUDES := \
+  '*.so' \
+  '*.wasm' \
+  '*.a' \
+  '*.data' \
+  '*.dbg' \
+  '*.symbols' \
+  '/firefox' \
+  '/firefox-bin' \
+  '/pingsender' \
+  '/nsinstall' \
+  '/nsinstall_real'
+# The executable names are anchored to the rsync transfer ROOT (leading slash) so
+# they drop only dist/bin/<exe>, NOT nested directories that share the name. A bare
+# `firefox` matched any path component and wrongly excluded the devtools debugger's
+# client/firefox/ (commands.js, create.js) and netmonitor's src/utils/firefox/ ->
+# the debugger devtools panel was blank with "Missing chrome or resource URL:
+# resource://devtools/client/debugger/src/client/firefox/commands.js".
+
+# Trim heavy, optional feature trees from the chrome bundle unless CHROME_FULL=1
+# (which ships the complete Firefox asset set). None are needed to boot or render
+# pages: hyphenation dicts (cosmetic line breaks) and spellcheck dicts.
+# chrome/remote (Remote Agent / CDP+WebDriver, ~720K) must ship: this build has
+# ENABLE_WEBDRIVER, so browser.js's gRemoteControl dereferences the Marionette
+# service on EVERY chrome-window load (gBrowserInit.onLoad -> updateVisualCue).
+# Excluding it left remote.manifest pointing at missing files -> the lazy service
+# getter failed -> `Marionette` undefined -> onLoad threw before registering
+# _delayedStartup, so PanelUI/BookmarkingUI/FullZoom etc. never initialized
+# (first symptom: hamburger menu "PanelUI.panel is undefined").
+# For pdf.js, keep the small integration modules in chrome/pdfjs/content/*.sys.mjs
+# (PdfjsContextMenu/PdfStreamConverter/PdfJs are eagerly imported -- e.g. by the
+# context-menu actor; dropping all of pdfjs broke right-click) and only drop the
+# heavy viewer UI + engine (content/web ~4.6 MB + content/build ~3 MB). PDF *viewing*
+# is disabled; PDFs download instead. (Excluded chrome.manifest entries remain, so a
+# feature only errors if actually invoked.) Together ~15 MB uncompressed off the tar.
+ifeq ($(CHROME_FULL),)
+CHROME_EXCLUDES += \
+  '/chrome/pdfjs/content/web' \
+  '/chrome/pdfjs/content/build' \
+  '/hyphenation' \
+  '/dictionaries'
+endif
+
+chrome-assets:
+	@if [ ! -d "$(CHROME_GRE_SRC)" ]; then \
+	  echo "chrome-assets: missing $(CHROME_GRE_SRC); build the engine first (make build)" >&2; exit 1; fi
+	@if [ ! -d "$(CHROME_FONT_SRC)" ]; then \
+	  echo "chrome-assets: missing $(CHROME_FONT_SRC); the firefox/ source checkout is required for bundled fonts" >&2; exit 1; fi
+	@if [ -f "$(CHROME_ARCHIVE)" ] && [ -f "$(CHROME_MANIFEST)" ] && \
+	  [ -z "$$(find "$(CHROME_GRE_SRC)" "$(CHROME_FONT_SRC)" -newer "$(CHROME_ARCHIVE)" -print -quit)" ] && \
+	  [ -z "$$(find "$(CHROME_GRE_SRC)" "$(CHROME_FONT_SRC)" -newer "$(CHROME_MANIFEST)" -print -quit)" ]; then \
+	  echo ">> $(CHROME_ARCHIVE) up to date"; exit 0; \
+	fi; \
+	set -e; \
+	stage=$$(mktemp -d); tarfile=$$(mktemp); \
+	trap 'rm -rf "$$stage" "$$tarfile" "$(CHROME_ARCHIVE).tmp"' EXIT; \
+	rsync -aL $(patsubst %,--exclude=%,$(CHROME_EXCLUDES)) "$(CHROME_GRE_SRC)/" "$$stage/"; \
+	for dest in fonts browser/fonts; do \
+	  mkdir -p "$$stage/$$dest"; \
+	  cp "$(CHROME_FONT_SRC)"/*.ttf "$$stage/$$dest/"; \
+	done; \
+	tar -cf "$$tarfile" -C "$$stage" .; \
+	size=$$(stat -c%s "$$tarfile"); \
+	mkdir -p "$(CHROME_PUBLIC)"; \
+	zstd -q -f -19 "$$tarfile" -o "$(CHROME_ARCHIVE).tmp"; \
+	chmod 644 "$(CHROME_ARCHIVE).tmp"; \
+	printf '{"uncompressedSize":%s}\n' "$$size" > "$(CHROME_MANIFEST)"; \
+	mv "$(CHROME_ARCHIVE).tmp" "$(CHROME_ARCHIVE)"; \
+	echo ">> wrote $(CHROME_ARCHIVE) ($$size bytes uncompressed)"
+
 # Run the Vite demos (build the library first). `embed-demo` is the basic
 # embed-a-web-page demo; `chrome-demo` supplies the Firefox front-end files.
 embed-demo: libxul
 	pnpm --filter embed-demo dev
-chrome-demo: libxul
+chrome-demo: libxul chrome-assets
 	pnpm --filter chrome-demo dev
 
 clean:

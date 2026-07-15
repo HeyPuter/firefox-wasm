@@ -23,24 +23,25 @@
 *.zst
 gecko-assets.json
 
-# --- emscripten JS glue (emitted next to the .wasm above) ---
 *.worker.js
 # gecko.js
 gltest.js
 socktest.js
 /web/sm.js
 
-# --- staged GRE (copied from dist/bin by stage-gre.sh at build time) ---
 gre-stage/
 
-# --- dependencies ---
 node_modules/
 
-# the Gecko engine fork — shallow-cloned at a pinned commit by `make firefox`
 /firefox/
 
-# the pinned, WasmFS-patched emscripten — pulled + patched by `make emsdk`
 /emsdk/
+
+demo/chrome/dist
+demo/embed/dist
+demo/chrome/public/chrome-assets.clobber
+demo/chrome/public/chrome-assets.json
+
 
 # --- logs & render/test artifacts ---
 *.log
@@ -57,4 +58,3 @@ node_modules/
 
 # node deps (also as symlinks, e.g. a demo's node_modules)
 node_modules
-

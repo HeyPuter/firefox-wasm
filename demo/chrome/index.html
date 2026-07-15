@@ -47,7 +47,7 @@
         </div>
       </header>
       <div class="hero">
-        <div id="splash-shell" class="hero-inner" data-phase="loading">
+        <div id="splash-shell" class="hero-inner" data-phase="predownload">
           <div class="hero-text" aria-labelledby="project-title">
             <img class="project-logo" src="logo.webp" alt="gecko.js" />
             <h1 id="project-title" class="splash-title">
@@ -62,7 +62,7 @@
             <div class="project-facts" aria-label="Project highlights">
               <div class="fact">
                 <strong>Assets</strong>
-                <span>Cached locally in OPFS after preparation.</span>
+                <span>Downloaded once per visit, served from memory.</span>
               </div>
               <div class="fact">
                 <strong>Engine</strong>
@@ -73,14 +73,43 @@
                 <span>Tabs load web content through a Wisp server.</span>
               </div>
             </div>
+            <section
+              class="startup-console"
+              aria-label="Startup console"
+            >
+              <p class="phase-kicker">Startup log</p>
+              <div
+                id="console-output"
+                class="console-box"
+                role="log"
+                aria-label="Startup console output"
+              ></div>
+            </section>
           </div>
 
-        <div id="stage-card" class="stage-card" data-phase="loading">
+        <div id="stage-card" class="stage-card" data-phase="predownload">
+          <section
+            class="phase-section phase-predownload"
+            aria-label="Download browser assets"
+          >
+            <p class="phase-kicker">Phase 1</p>
+            <h2 class="phase-title">Download browser files</h2>
+            <p class="splash-status">
+              The Firefox user interface ships as a ~18&nbsp;MB download,
+              fetched fresh on every visit and served from memory.
+            </p>
+            <div class="splash-actions">
+              <button id="download-btn" type="button" class="start-btn">
+                Download
+              </button>
+            </div>
+          </section>
+
           <section
             class="phase-section phase-loading"
             aria-label="Preparing browser assets"
           >
-            <p class="phase-kicker">Phase 1</p>
+            <p class="phase-kicker">Phase 2</p>
             <h2 class="phase-title">Preparing browser files</h2>
             <p id="splash-status" class="splash-status">
               Preparing chrome assets
@@ -104,6 +133,8 @@
             class="phase-section phase-ready"
             aria-label="Launch options"
           >
+            <p class="phase-kicker">Phase 3</p>
+            <h2 class="phase-title">Launch options</h2>
             <div class="splash-controls">
               <label class="option-card">
                 <input type="checkbox" id="opt-gpu" />
@@ -121,6 +152,9 @@
               </label>
               <label class="wisp-field">
                 <span>Wisp server</span>
+                <span class="wisp-copy">
+                  Websocket proxy endpoint that tabs load web content through.
+                </span>
                 <input
                   type="text"
                   id="opt-wisp"
@@ -135,18 +169,6 @@
                 Start
               </button>
             </div>
-          </section>
-
-          <section
-            class="phase-section phase-console"
-            aria-label="Startup console"
-          >
-            <div
-              id="console-output"
-              class="console-box"
-              role="log"
-              aria-label="Startup console output"
-            ></div>
           </section>
         </div>
         </div>
