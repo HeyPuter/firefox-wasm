@@ -1,6 +1,6 @@
 {
   "name": "gecko.js",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Embeddable Gecko (Firefox engine) compiled to WebAssembly. ESM library exporting a Gecko API class.",
   "main": "./dist/gecko.js",

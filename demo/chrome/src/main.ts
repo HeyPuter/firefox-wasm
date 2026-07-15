@@ -357,16 +357,21 @@ async function start(): Promise<void> {
 
     // Default the search engine to DuckDuckGo. Seeded once (localStorage-gated)
     // so a user picking a different engine later isn't overridden on the next
-    // visit. Runs async behind Services.search.init(); fire-and-forget.
-    const SEARCH_SEEDED_KEY = "chrome-demo-search-seeded";
+    // visit. This Firefox has no Services.search (the search service is a plain
+    // ESM singleton now); import it via moz-src. Fire-and-forget behind its
+    // async init(). (Key is -v2: v1 was burned by a broken seed attempt.)
+    const SEARCH_SEEDED_KEY = "chrome-demo-search-seeded-v2";
     if (!localStorage.getItem(SEARCH_SEEDED_KEY)) {
       localStorage.setItem(SEARCH_SEEDED_KEY, "1");
       void gecko.evalChrome(`(() => {
         (async () => {
-          await Services.search.init();
-          const engine = Services.search.getEngineByName('DuckDuckGo');
+          const { SearchService } = ChromeUtils.importESModule(
+            'moz-src:///toolkit/components/search/SearchService.sys.mjs');
+          await SearchService.init();
+          const engine = SearchService.getEngineByName('DuckDuckGo');
           if (!engine) throw new Error('DuckDuckGo engine not found');
-          await Services.search.setDefault(engine, Services.search.CHANGE_REASON.USER);
+          await SearchService.setDefault(engine, SearchService.CHANGE_REASON.USER);
+          console.log('search seed: default is now ' + (await SearchService.getDefault()).name);
         })().catch(e => console.error('search seed: ' + e));
         return 'search-seed-started';
       })()`);
