@@ -39,8 +39,8 @@ input {
 }
 
 #splash {
-  height: 100vh;
-  overflow-y: auto;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 #splash.done {
@@ -133,20 +133,27 @@ input {
 
 /* --- centered stage ------------------------------------------------------ */
 .stage {
-  min-height: 100vh;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 96px 24px 56px;
+  padding: 88px 24px 40px;
+  overflow: hidden;
 }
 
+/* Bounded to the viewport so growing content (the log terminal, expanded
+   advanced options) never scrolls the page -- the terminal flexes to fill
+   the leftover space and scrolls inside itself instead. */
 .stage-inner {
   width: 100%;
   max-width: 580px;
+  max-height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
+  overflow-y: auto;
 }
 
 .project-logo {
@@ -427,12 +434,17 @@ input {
   display: none;
   width: 100%;
   max-width: 580px;
-  margin-top: 32px;
+  margin-top: 24px;
   text-align: left;
+  /* Fill the space left below the panel and cap there, so the log grows
+     internally rather than pushing the page taller. */
+  flex: 1;
+  min-height: 0;
 }
 
 #splash-shell[data-phase="console"] .startup-console {
-  display: block;
+  display: flex;
+  flex-direction: column;
 }
 
 .phase-kicker {
@@ -445,7 +457,8 @@ input {
 }
 
 .console-box {
-  height: min(40vh, 340px);
+  flex: 1;
+  min-height: 120px;
   overflow: auto;
   padding: 12px 15px;
   border: 1px solid #eaebee;

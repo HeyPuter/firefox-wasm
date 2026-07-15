@@ -159,6 +159,7 @@ const opts: Opts = {
 const gpuToggle = document.getElementById("opt-gpu") as HTMLInputElement;
 const jitToggle = document.getElementById("opt-jit") as HTMLInputElement;
 const wispInput = document.getElementById("opt-wisp") as HTMLInputElement;
+const advanced = document.querySelector(".advanced") as HTMLDetailsElement;
 if (puterBranding) {
   stageCard.classList.add("puter-branded");
   wispInput.disabled = true;
@@ -242,6 +243,8 @@ async function start(): Promise<void> {
   gpuToggle.disabled = true;
   jitToggle.disabled = true;
   wispInput.disabled = true;
+  // Collapse the advanced options so the startup log has room without scrolling.
+  advanced.open = false;
   startBtn.textContent = "Starting…";
 
   const chosen = collectOpts();
