@@ -509,6 +509,31 @@ input {
   border-color: #1d49e7;
 }
 
+/* Shown (unhidden from JS) when the host browser lacks WebAssembly JSPI and
+   Launch is permanently greyed out; carries the how-to-enable hint. */
+.jspi-note {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #f0d998;
+  border-radius: 10px;
+  background: #fff8e1;
+  color: #8a6d1a;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.jspi-note[hidden] {
+  display: none;
+}
+
+.jspi-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .branding-note {
   display: none;
   margin: 0;

@@ -216,6 +216,37 @@ function buildEnv(o: Opts): Record<string, string> {
 // require before audio (and other gesture-gated APIs) can start.
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
 
+// The engine needs WebAssembly JSPI (the GPU present path suspends on it, wired
+// into the glue at link time) -- without it the wasm won't run. Feature-detect
+// and keep Launch greyed out when it's missing; Firefox has JSPI behind an
+// about:config flag, so give Firefox users the recipe.
+const hasJspi =
+  typeof (WebAssembly as { Suspending?: unknown }).Suspending === "function" &&
+  typeof (WebAssembly as { promising?: unknown }).promising === "function";
+if (!hasJspi) {
+  const note = document.getElementById("jspi-note") as HTMLElement;
+  note.textContent =
+    "This browser doesn't support WebAssembly JSPI, which Firefox WASM needs to run.";
+  if (navigator.userAgent.includes("Firefox")) {
+    const hint = document.createElement("span");
+    hint.append(
+      " To enable it in Firefox: open ",
+      Object.assign(document.createElement("code"), {
+        textContent: "about:config",
+      }),
+      ", set ",
+      Object.assign(document.createElement("code"), {
+        textContent: "javascript.options.wasm_js_promise_integration",
+      }),
+      " to ",
+      Object.assign(document.createElement("code"), { textContent: "true" }),
+      ", then reload this page.",
+    );
+    note.append(hint);
+  }
+  note.hidden = false;
+}
+
 function fail(e: unknown): void {
   console.error("[chrome-demo] startup failed", e);
   setUiPhase("console");
@@ -237,7 +268,8 @@ chromeFsReady
   .then(() => {
     console.log("[chrome-demo] chrome assets ready");
     setUiPhase("ready");
-    startBtn.disabled = false;
+    // Stays greyed out (never enabled) when the browser lacks JSPI.
+    startBtn.disabled = !hasJspi;
   })
   .catch(fail);
 
