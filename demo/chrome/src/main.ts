@@ -17,10 +17,12 @@ declare global {
   }
 }
 
-// VITE_DISABLE_BRANDING strips the Firefox logo (the hero image and the
-// favicon, which use the same artwork).
+// VITE_DISABLE_BRANDING strips the Firefox logo: the hero tile (and the "×"
+// connector, leaving just the WebAssembly mark) plus the favicon, which uses
+// the same artwork.
 if (import.meta.env.VITE_DISABLE_BRANDING) {
-  document.querySelector(".project-logo")?.remove();
+  document.querySelector(".firefox-tile")?.remove();
+  document.querySelector(".logo-x")?.remove();
   document.getElementById("favicon")?.remove();
 }
 
@@ -28,6 +30,7 @@ const canvas = document.getElementById("screen") as HTMLCanvasElement;
 const splash = document.getElementById("splash") as HTMLElement;
 const splashShell = document.getElementById("splash-shell") as HTMLElement;
 const stageCard = document.getElementById("stage-card") as HTMLElement;
+const stage = document.querySelector(".stage") as HTMLElement;
 const status = document.getElementById("splash-status") as HTMLElement;
 const phase = document.getElementById("progress-phase") as HTMLElement;
 const percent = document.getElementById("progress-percent") as HTMLElement;
@@ -35,10 +38,11 @@ const fill = document.getElementById("progress-fill") as HTMLElement;
 const progressbar = document.querySelector(".progress-track") as HTMLElement;
 const consoleOutput = document.getElementById("console-output") as HTMLElement;
 
-type UiPhase = "predownload" | "loading" | "ready" | "console";
+type UiPhase = "loading" | "ready" | "console";
 function setUiPhase(next: UiPhase): void {
   splashShell.dataset.phase = next;
   stageCard.dataset.phase = next;
+  stage.dataset.phase = next;
 }
 
 const nativeConsole = {
@@ -159,6 +163,7 @@ const opts: Opts = {
 const gpuToggle = document.getElementById("opt-gpu") as HTMLInputElement;
 const jitToggle = document.getElementById("opt-jit") as HTMLInputElement;
 const wispInput = document.getElementById("opt-wisp") as HTMLInputElement;
+const advanced = document.querySelector(".advanced") as HTMLDetailsElement;
 if (puterBranding) {
   stageCard.classList.add("puter-branded");
   wispInput.disabled = true;
@@ -203,65 +208,47 @@ function buildEnv(o: Opts): Record<string, string> {
   return optEnv;
 }
 
-// --- Download-gated asset prep, explicit-Start engine init ----------------
-// The panel walks three explicit stages: a pre-download phase (nothing fetched
-// yet -- the ~18 MB asset download only begins on the Download click), the
-// download/decompress progress bar, then the launch options. The emscripten/
-// Gecko init is gated behind Start: it spins up the audio AudioWorklet, and the
-// click is the user gesture browsers require before audio (and other
-// gesture-gated APIs) can start.
+// --- Auto asset prep on load, explicit-Launch engine init -----------------
+// The browser assets start downloading + decompressing immediately on page
+// load (no gating click). Once they're ready the panel shows a single Launch
+// button: the emscripten/Gecko init stays gated behind that click because it
+// spins up the audio AudioWorklet, and the click is the user gesture browsers
+// require before audio (and other gesture-gated APIs) can start.
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
-const downloadBtn = document.getElementById(
-  "download-btn",
-) as HTMLButtonElement;
-// Navbar CTA: forwards to whatever action the panel currently offers
-// (Download / Start / Retry), and tracks its enabled state.
-const navLaunch = document.getElementById("nav-launch") as HTMLButtonElement;
-navLaunch.addEventListener("click", () => {
-  if (splashShell.dataset.phase === "predownload") downloadBtn.click();
-  else startBtn.click();
-});
 
 function fail(e: unknown): void {
   console.error("[chrome-demo] startup failed", e);
   setUiPhase("console");
   startBtn.disabled = false;
-  navLaunch.disabled = false;
   startBtn.textContent = "Retry";
   startBtn.onclick = () => location.reload();
 }
 
-setUiPhase("predownload");
+// Launch is only actionable once the assets have finished loading.
+startBtn.onclick = () => void start();
 startBtn.disabled = true;
-navLaunch.disabled = false;
+setUiPhase("loading");
 
-// Resolves to the in-memory tar FsProvider handed to gecko.init() as `fs` on
-// Start; assigned when the Download click kicks off prepareChromeFs.
-let chromeFsReady: Promise<FsProvider> | undefined;
-
-downloadBtn.onclick = () => {
-  downloadBtn.disabled = true;
-  navLaunch.disabled = true;
-  setUiPhase("loading");
-  chromeFsReady = prepareChromeFs(setProgress);
-  chromeFsReady
-    .then(() => {
-      console.log("[chrome-demo] chrome assets ready");
-      setUiPhase("ready");
-      startBtn.disabled = false;
-      navLaunch.disabled = false;
-      startBtn.onclick = () => void start(); // engine init only happens on this click
-    })
-    .catch(fail);
-};
+// Resolves to the in-memory tar FsProvider handed to gecko.init() on Launch.
+// Kicked off immediately below so the ~18 MB download overlaps the time the
+// user spends reading the page.
+const chromeFsReady: Promise<FsProvider> = prepareChromeFs(setProgress);
+chromeFsReady
+  .then(() => {
+    console.log("[chrome-demo] chrome assets ready");
+    setUiPhase("ready");
+    startBtn.disabled = false;
+  })
+  .catch(fail);
 
 async function start(): Promise<void> {
   setUiPhase("console");
   startBtn.disabled = true;
-  navLaunch.disabled = true;
   gpuToggle.disabled = true;
   jitToggle.disabled = true;
   wispInput.disabled = true;
+  // Collapse the advanced options so the startup log has room without scrolling.
+  advanced.open = false;
   startBtn.textContent = "Starting…";
 
   const chosen = collectOpts();
@@ -290,8 +277,8 @@ async function start(): Promise<void> {
     // GRE: an FsProvider over the in-memory decompressed tar (consulted
     // provider-first for /gre, baked gecko.data as fallback). Profile:
     // persistent OPFS at `${PROFILE_OPFS_PATH}`.
-    // start() is only reachable once the download phase resolved chromeFsReady.
-    fs: await chromeFsReady!,
+    // Launch is only enabled once chromeFsReady resolved, so this is instant.
+    fs: await chromeFsReady,
     profile: PROFILE_OPFS_PATH,
     // The chrome UI itself boots from local files; loading sites in tabs goes
     // through the WISP endpoint (defaults to the dev server's /wisp/ proxy).

@@ -2,7 +2,7 @@
   color-scheme: light;
   font-family: "Roboto", Arial, sans-serif;
   background: #fff;
-  color: #333;
+  color: #111827;
 }
 
 * {
@@ -15,7 +15,7 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background: #fff;
-  color: #333;
+  color: #111827;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -39,32 +39,15 @@ input {
 }
 
 #splash {
-  height: 100vh;
-  overflow-y: auto;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 #splash.done {
   display: none;
 }
 
-.hero {
-  min-height: 100%;
-  background: #fff;
-  padding: 140px 48px 70px;
-}
-
-.hero-inner {
-  width: 100%;
-  display: grid;
-  /* Even 50/50 split that shrinks with the page: the hero is capped at half
-     the row (minus half the gap), so it is never wider than the panel; on very
-     wide screens it additionally caps at 760px and the panel takes the rest.
-     Below the 820px breakpoint the layout collapses to a single column. */
-  grid-template-columns: minmax(320px, min(760px, calc(50% - 28px))) minmax(320px, 1fr);
-  gap: 56px;
-  align-items: start;
-}
-
+/* --- top nav ------------------------------------------------------------- */
 .top-nav {
   position: fixed;
   top: 0;
@@ -148,190 +131,183 @@ input {
   opacity: 1;
 }
 
-.nav-cta {
-  display: inline-flex;
+/* --- centered stage ------------------------------------------------------ */
+.stage {
+  position: relative;
+  height: 100%;
+  display: flex;
   align-items: center;
-  appearance: none;
-  padding: 8px 16px;
-  border: 1px solid #1d49e7;
-  border-radius: 8px;
-  background-color: #1d49e7;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    transform 0.15s ease;
+  justify-content: center;
+  padding: 88px 24px 40px;
+  overflow: hidden;
 }
 
-.nav-cta:hover:not(:disabled),
-.nav-cta:focus:not(:disabled) {
-  background-color: #1a3fca;
-  border-color: #1a3fca;
+/* Bounded to the viewport so growing content (the log terminal, expanded
+   advanced options) never scrolls the page -- the terminal flexes to fill
+   the leftover space and scrolls inside itself instead. */
+.stage-inner {
+  width: 100%;
+  max-width: 580px;
+  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  overflow-y: auto;
 }
 
-.nav-cta:hover:not(:disabled) {
-  transform: translateY(-1px);
+.logo-lockup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 0 0 30px;
 }
 
-.nav-cta:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.nav-cta:focus-visible {
-  outline: 2px solid #1d49e7;
-  outline-offset: 2px;
-}
-
-.nav-cta:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.stage-card {
-  background: #fff;
-  border: 1px solid #ececec;
-  border-radius: 8px;
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.05),
-    0 2px 4px rgba(0, 0, 0, 0.05),
-    0 4px 8px rgba(0, 0, 0, 0.05),
-    0 8px 16px rgba(0, 0, 0, 0.05);
-}
-
-.project-logo {
-  width: 88px;
-  height: auto;
-  display: block;
-  padding: 16px;
-  margin-bottom: 24px;
+.logo-tile {
+  width: 76px;
+  height: 76px;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: linear-gradient(180deg, #fcfcfd 0%, #eff1f4 100%);
   border: 1px solid #ececec;
   border-radius: 20px;
 }
 
-.eyebrow {
-  margin: 0 0 8px;
-  color: #9aa1ad;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.project-logo,
+.wasm-mark {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.logo-x {
+  color: #c4c8cf;
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 1;
+  user-select: none;
 }
 
 .splash-title {
   margin: 0;
-  max-width: 760px;
   font-size: 46px;
-  line-height: 1.15;
+  line-height: 1.1;
   font-weight: 300;
-  color: #333;
+  letter-spacing: -0.02em;
+  color: #111827;
 }
 
 .project-copy {
-  max-width: 720px;
-  margin: 20px 0 0;
-  color: #666;
-  font-size: 18px;
+  margin: 16px 0 0;
+  /* Wide enough that each sentence (split with <br>) sits on one line. */
+  max-width: 62ch;
+  color: #6b7280;
+  font-size: 17px;
   font-weight: 300;
   line-height: 1.6;
 }
 
-.project-facts {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-  margin-top: 40px;
-  max-width: 760px;
-}
-
-.fact strong,
-.fact span {
-  display: block;
-}
-
-.fact strong {
-  color: #333;
-  font-size: 14px;
-  font-weight: 500;
-  margin-bottom: 4px;
-}
-
-.fact span {
+/* --- "powered by" badge (pinned to the bottom of the viewport) ----------- */
+.powered-badge {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 15px;
+  border: 1px solid #e6e8ec;
+  border-radius: 999px;
+  background: #f9fafb;
   color: #6b7280;
-  font-size: 13px;
-  font-weight: 300;
-  line-height: 1.5;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background-color 0.15s ease;
 }
 
-.stage-card {
-  display: flex;
-  flex-direction: column;
-  /* Offset the card below the hero copy so the two columns don't read as
-     one top-aligned row. */
-  margin-top: 96px;
-  min-height: 440px;
-  padding: 26px;
+.powered-badge strong {
+  color: #111827;
+  font-weight: 600;
 }
 
-.phase-section {
+.powered-badge:hover {
+  border-color: #1d49e7;
+  background: rgba(29, 73, 231, 0.05);
+  color: #1d49e7;
+}
+
+.powered-badge:hover strong {
+  color: #1d49e7;
+}
+
+.powered-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #1d49e7;
+}
+
+/* Hidden while launching so it doesn't overlap the startup log. */
+.stage[data-phase="console"] .powered-badge {
   display: none;
 }
 
-/* The console phase keeps the launch options on screen (disabled/greyed via
-   the controls' disabled state); the startup log lives in the hero column.
-   The visible section is a flex column filling the card so .splash-actions
-   (the Download/Start button) pins to the bottom via margin-top: auto. */
-.stage-card[data-phase="predownload"] .phase-predownload,
-.stage-card[data-phase="loading"] .phase-loading,
-.stage-card[data-phase="ready"] .phase-ready,
-.stage-card[data-phase="console"] .phase-ready {
+/* --- launch panel (loading / ready / console) ---------------------------- */
+.launch-panel {
+  width: 100%;
+  max-width: 360px;
+  margin: 36px 0 0;
   display: flex;
   flex-direction: column;
-  flex: 1;
+  align-items: center;
+  /* Reserve height so the layout doesn't jump as loading swaps to the button. */
+  min-height: 92px;
+  justify-content: center;
 }
 
-.phase-kicker {
-  margin: 0 0 8px;
-  color: #9aa1ad;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.panel-loading {
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
 }
 
-.phase-title {
-  margin: 0;
-  color: #333;
-  font-size: 22px;
-  line-height: 1.2;
-  font-weight: 500;
+.panel-ready {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
 }
 
-.splash-status {
-  min-height: 42px;
-  margin: 14px 0 18px;
-  color: #666;
-  font-size: 14px;
-  font-weight: 300;
-  line-height: 1.5;
+#stage-card[data-phase="loading"] .panel-loading,
+#stage-card[data-phase="ready"] .panel-ready,
+#stage-card[data-phase="console"] .panel-ready {
+  display: flex;
 }
 
 .progress-track {
-  height: 10px;
+  height: 8px;
   overflow: hidden;
-  border: 1px solid #e2e5ea;
-  border-radius: 5px;
-  background: #eff1f4;
+  border-radius: 999px;
+  background: #eef0f3;
 }
 
 .progress-fill {
   width: 0%;
   height: 100%;
+  border-radius: 999px;
   background: #1d49e7;
   transition: width 120ms ease;
 }
@@ -340,43 +316,124 @@ input {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  margin-top: 8px;
-  color: #6b7280;
+  color: #9aa1ad;
   font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
 }
 
-/* Vertical rhythm: 8px between everything inside a labeled group (heading,
-   description, cards, input), 16px between the groups themselves. */
-.splash-controls {
-  display: grid;
-  gap: 16px;
-  margin-top: 18px;
+.splash-status {
+  margin: 0;
+  min-height: 18px;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Same look as .wisp-field: a small heading over its controls. */
-.flags-group {
-  display: grid;
-  gap: 8px;
-  color: #333;
+.start-btn {
+  appearance: none;
+  border: none;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 16px 44px;
+  cursor: pointer;
+  /* Soft animated gradient that drifts side to side -- reads as "live /
+     clickable" without being loud (and no shadow). */
+  background: linear-gradient(120deg, #1d49e7, #4f74ff, #1d49e7);
+  background-size: 220% 100%;
+  animation: launch-drift 5s ease-in-out infinite;
+  transition:
+    transform 0.15s ease,
+    filter 0.15s ease;
+}
+
+@keyframes launch-drift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.start-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.start-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.start-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  /* Calm the button once it's disabled (loading / starting). */
+  background: #1d49e7;
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .start-btn {
+    animation: none;
+  }
+}
+
+/* --- advanced options disclosure ----------------------------------------- */
+.advanced {
+  width: 100%;
+  max-width: 320px;
+}
+
+.advanced > summary {
+  list-style: none;
+  cursor: pointer;
+  text-align: center;
+  color: #9aa1ad;
   font-size: 13px;
   font-weight: 500;
+  padding: 6px;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+.advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced > summary:hover {
+  color: #6b7280;
+}
+
+.advanced[open] > summary {
+  margin-bottom: 10px;
+}
+
+.splash-controls {
+  display: grid;
+  gap: 10px;
+  text-align: left;
 }
 
 .option-card {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 14px;
+  padding: 12px;
   border: 1px solid #e2e5ea;
   border-radius: 10px;
   background: #fff;
   color: #333;
   cursor: pointer;
   user-select: none;
-  transition:
-    border-color 0.15s ease,
-    color 0.15s ease;
+  transition: border-color 0.15s ease;
 }
 
 .option-card:hover {
@@ -386,7 +443,7 @@ input {
 .option-card input[type="checkbox"] {
   width: 16px;
   height: 16px;
-  margin-top: 2px;
+  margin-top: 1px;
   accent-color: #1d49e7;
 }
 
@@ -418,7 +475,7 @@ input {
 
 .wisp-field {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   color: #333;
   font-size: 13px;
   font-weight: 500;
@@ -435,7 +492,7 @@ input {
   width: 100%;
   padding: 9px 11px;
   border: 1px solid #e2e5ea;
-  border-radius: 5px;
+  border-radius: 8px;
   background: #f9f9f9;
   color: #333;
   font:
@@ -456,67 +513,58 @@ input {
   display: none;
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid #f0d998;
+  border: 1px solid #e2e5ea;
   border-radius: 10px;
-  background: #fff8e1;
-  color: #8a6d1a;
+  background: #f9fafb;
+  color: #6b7280;
   font-size: 12px;
+  font-weight: 300;
   line-height: 1.45;
 }
 
-.stage-card.puter-branded .wisp-field {
+/* Puter-branded mode: hide the editable Wisp field, show the fixed note. */
+#stage-card.puter-branded .wisp-field {
   display: none;
 }
 
-.stage-card.puter-branded .branding-note {
+#stage-card.puter-branded .branding-note {
   display: block;
 }
 
-.splash-actions {
-  display: flex;
-  justify-content: flex-start;
-  margin-top: auto;
-  padding-top: 14px;
-}
-
-.start-btn {
-  appearance: none;
-  border: none;
-  border-radius: 5px;
-  background: #1d49e7;
-  color: #fff;
-  font-weight: 500;
-  padding: 12px 24px;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.start-btn:hover:not(:disabled) {
-  background: #1a41d1;
-}
-
-.start-btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* Startup log: lives under the hero copy, only shown while the engine boots. */
+/* --- startup console (only while launching) ------------------------------ */
 .startup-console {
   display: none;
-  max-width: 760px;
-  margin-top: 40px;
+  width: 100%;
+  max-width: 580px;
+  margin-top: 24px;
+  text-align: left;
+  /* Fill the space left below the panel and cap there, so the log grows
+     internally rather than pushing the page taller. */
+  flex: 1;
+  min-height: 0;
 }
 
-.hero-inner[data-phase="console"] .startup-console {
-  display: block;
+#splash-shell[data-phase="console"] .startup-console {
+  display: flex;
+  flex-direction: column;
+}
+
+.phase-kicker {
+  margin: 0 0 8px;
+  color: #9aa1ad;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .console-box {
-  height: min(40vh, 340px);
+  flex: 1;
+  min-height: 120px;
   overflow: auto;
   padding: 12px 15px;
   border: 1px solid #eaebee;
-  border-radius: 7px;
+  border-radius: 10px;
   background: #fafbfc;
   color: #3b3d40;
   font:
@@ -550,14 +598,9 @@ input {
   user-select: none;
 }
 
-@media (max-width: 820px) {
-  .hero {
-    padding: 110px 20px 50px;
-  }
-
-  .hero-inner {
-    grid-template-columns: 1fr;
-    gap: 32px;
+@media (max-width: 600px) {
+  .stage {
+    padding: 88px 20px 44px;
   }
 
   .splash-title {
@@ -566,15 +609,5 @@ input {
 
   .project-copy {
     font-size: 16px;
-  }
-
-  .project-facts {
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
-
-  .stage-card {
-    margin-top: 0;
-    min-height: auto;
   }
 }
