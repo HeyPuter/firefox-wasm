@@ -33,6 +33,8 @@ function serveEngine(): Plugin {
         if (ENGINE.includes(name) && fs.existsSync(path.join(libDist, name))) {
           res.setHeader('Content-Type', mime(name));
           res.setHeader('Cache-Control', 'no-store');  // always serve the freshly-built wasm
+          // Content-Length so the demo's download progress bar has a total.
+          res.setHeader('Content-Length', fs.statSync(path.join(libDist, name)).size);
           fs.createReadStream(path.join(libDist, name)).pipe(res);
           return;
         }

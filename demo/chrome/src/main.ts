@@ -260,13 +260,83 @@ startBtn.onclick = () => void start();
 startBtn.disabled = true;
 setUiPhase("loading");
 
-// Resolves to the in-memory tar FsProvider handed to gecko.init() on Launch.
-// Kicked off immediately below so the ~18 MB download overlaps the time the
-// user spends reading the page.
-const chromeFsReady: Promise<FsProvider> = prepareChromeFs(setProgress);
-chromeFsReady
+// --- combined download progress --------------------------------------------
+// The chrome-assets archive and the engine wasm download concurrently and share
+// the single progress bar (summed bytes across both). Non-download updates from
+// the assets side (decompressing/ready) pass through only once the wasm is also
+// in; until then the bar keeps tracking the combined download.
+const dl = {
+  assets: { loaded: 0, total: 0 },
+  wasm: { loaded: 0, total: 0, done: false },
+};
+
+function renderDownloads(): void {
+  const loaded = dl.assets.loaded + dl.wasm.loaded;
+  const total =
+    dl.assets.total && dl.wasm.total
+      ? dl.assets.total + dl.wasm.total
+      : undefined;
+  setProgress({
+    phase: "downloading",
+    loaded,
+    total,
+    percent: total ? loaded / total : undefined,
+    message: "Downloading Firefox",
+  });
+}
+
+function assetsProgress(p: ChromeAssetsProgress): void {
+  if (p.phase === "downloading") {
+    dl.assets.loaded = p.loaded ?? dl.assets.loaded;
+    dl.assets.total = p.total ?? dl.assets.total;
+  } else {
+    // The assets download is over (decompress/install underway): count it fully.
+    if (dl.assets.total) dl.assets.loaded = dl.assets.total;
+    if (dl.wasm.done) {
+      setProgress(p);
+      return;
+    }
+  }
+  renderDownloads();
+}
+
+// Optimistic engine-wasm prefetch, started at page load in parallel with the
+// chrome assets: stream it down with progress, then hand gecko.init() a blob:
+// URL so the loader's own wasm fetch resolves instantly from memory. The blob
+// is typed application/wasm so instantiateStreaming still accepts it (the
+// release .zst goes through the loader's arrayBuffer+zstd path regardless).
+async function fetchWasmBlob(): Promise<string> {
+  const url = new URL(__GECKO_WASM__.url, location.href).href;
+  const r = await fetch(url);
+  if (!r.ok || !r.body)
+    throw new Error(`engine wasm fetch failed (${r.status}) for ${url}`);
+  dl.wasm.total = Number(r.headers.get("Content-Length")) || 0;
+  const reader = r.body.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    dl.wasm.loaded += value.byteLength;
+    renderDownloads();
+  }
+  dl.wasm.done = true;
+  if (!dl.wasm.total) dl.wasm.total = dl.wasm.loaded;
+  renderDownloads();
+  return URL.createObjectURL(
+    new Blob(chunks as BlobPart[], { type: "application/wasm" }),
+  );
+}
+
+// Both kicked off immediately so the big downloads (~18 MB assets + the engine
+// wasm) overlap the time the user spends reading the page. chromeFsReady
+// resolves to the in-memory tar FsProvider handed to gecko.init() on Launch;
+// wasmBlobReady to the blob: URL for the engine wasm.
+const chromeFsReady: Promise<FsProvider> = prepareChromeFs(assetsProgress);
+const wasmBlobReady: Promise<string> = fetchWasmBlob();
+Promise.all([chromeFsReady, wasmBlobReady])
   .then(() => {
-    console.log("[chrome-demo] chrome assets ready");
+    console.log("[chrome-demo] chrome assets + engine wasm ready");
     setUiPhase("ready");
     // Stays greyed out (never enabled) when the browser lacks JSPI.
     startBtn.disabled = !hasJspi;
@@ -297,12 +367,12 @@ async function start(): Promise<void> {
     // Fill the viewport; a debounced window-resize listener keeps it in sync (below).
     width: window.innerWidth,
     height: window.innerHeight,
-    // __GECKO_WASM__ (injected by vite.config) is { url, compressed } for the
-    // served wasm. The url is page-relative (vite base './'); absolutize it here
-    // since the engine's fetch may run where relative URLs don't resolve
-    // against the page (e.g. a worker).
+    // The engine wasm was prefetched into memory at page load (its download is
+    // part of the progress bar); hand the loader the blob: URL so its own
+    // fetch resolves instantly. Launch is only enabled once wasmBlobReady
+    // resolved, so this await is instant.
     wasm: {
-      url: new URL(__GECKO_WASM__.url, location.href).href,
+      url: await wasmBlobReady,
       compressed: __GECKO_WASM__.compressed,
     },
     env: optEnv,
