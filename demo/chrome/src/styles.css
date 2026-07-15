@@ -133,6 +133,7 @@ input {
 
 /* --- centered stage ------------------------------------------------------ */
 .stage {
+  position: relative;
   height: 100%;
   display: flex;
   align-items: center;
@@ -184,12 +185,15 @@ input {
   line-height: 1.6;
 }
 
-/* --- "powered by" badge -------------------------------------------------- */
+/* --- "powered by" badge (pinned to the bottom of the viewport) ----------- */
 .powered-badge {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-top: 28px;
   padding: 7px 15px;
   border: 1px solid #e6e8ec;
   border-radius: 999px;
@@ -228,8 +232,8 @@ input {
   box-shadow: 0 0 0 3px rgba(29, 73, 231, 0.15);
 }
 
-/* Hidden while launching so the log fills the viewport without scrolling. */
-#splash-shell[data-phase="console"] .powered-badge {
+/* Hidden while launching so it doesn't overlap the startup log. */
+.stage[data-phase="console"] .powered-badge {
   display: none;
 }
 

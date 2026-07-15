@@ -28,6 +28,7 @@ const canvas = document.getElementById("screen") as HTMLCanvasElement;
 const splash = document.getElementById("splash") as HTMLElement;
 const splashShell = document.getElementById("splash-shell") as HTMLElement;
 const stageCard = document.getElementById("stage-card") as HTMLElement;
+const stage = document.querySelector(".stage") as HTMLElement;
 const status = document.getElementById("splash-status") as HTMLElement;
 const phase = document.getElementById("progress-phase") as HTMLElement;
 const percent = document.getElementById("progress-percent") as HTMLElement;
@@ -39,6 +40,7 @@ type UiPhase = "loading" | "ready" | "console";
 function setUiPhase(next: UiPhase): void {
   splashShell.dataset.phase = next;
   stageCard.dataset.phase = next;
+  stage.dataset.phase = next;
 }
 
 const nativeConsole = {
