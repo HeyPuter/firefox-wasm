@@ -538,10 +538,6 @@ input {
   max-width: 580px;
   margin-top: 24px;
   text-align: left;
-  /* Fill the space left below the panel and cap there, so the log grows
-     internally rather than pushing the page taller. */
-  flex: 1;
-  min-height: 0;
 }
 
 #splash-shell[data-phase="console"] .startup-console {
@@ -559,8 +555,9 @@ input {
 }
 
 .console-box {
-  flex: 1;
-  min-height: 120px;
+  /* Fixed height: the log scrolls internally instead of growing with (or
+     pushing around) the rest of the layout. */
+  height: 220px;
   overflow: auto;
   padding: 12px 15px;
   border: 1px solid #eaebee;

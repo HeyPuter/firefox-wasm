@@ -300,20 +300,20 @@ async function start(): Promise<void> {
     console.log("[chrome-demo] Firefox front-end booted");
     const PRELOADED_BOOKMARKS = [
       {
-        title: "Firefox WASM Github Repository",
+        title: "Puter Developer",
+        url: "https://developer.puter.com/",
+        guid: "chromedemo02",
+        favicon: "https://puter.com/dist/favicons/favicon-32x32.png",
+        faviconURL:
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH5gUVACYT5I64GAAABTxJREFUWMPtl1tsFGUUx3/fzOyl7XZ3WyiFFpGGAEFQBAQpBF/wAkRQjIRLMDbBcFMJGuVBghIw3AXUVKIhES+AAikFgRAjCVikJERuVrRcWlp7s9fd7XZ3Z2Z3xodpoYRuF4gGHziPM/Od73/O+Z//OSPw/mlyH026n5c/APC/AKDc9QkDMNp5KwkQ7c/MDi4LK6w7DC0xgFi7cwFCwKiRdnJHJwExis8E+KNUMO7JJIYMciBL0NAU4fjJNqqqFJBFQvcibhua4LDBhPFORo+w4fVEUWQb06Z4aW4xiEYFHo9KRWWU4Y+6Ka+IEggYDMhRCLQGWbW+icM/mpii+1Qo8S5P90q893Yas2ek8tsljYrKKP0eUjhwxMeHmwKkeRT278wmOyvKwrfqOH5SRdNM+mbZWLo4nc1rexOOVHPshNRtOboEIAQsWZDG9GkpLFvxNwWHwoTD4EwSCNMgHITJE5NITtZ5dWEtxcUGKBYfyq7rLFtRT6ork8WveSk67UPT41f6dmwGDBviYO6sFDZurWXn9yHCEevLiGoSDgs86YLnnk6m5PcQ5y9oVq3FTY+RsEHhoSCPDU2if3YUYuJuAJiMGeWkrS1E4eHQrc4NyB3joODbPkydlMK4sR7yP3KT01+HzkwSgopKneTkZBbOc+H2aLe+7xYAkOyU8PlUWts6nTIhK0th85oMgm06L82tZuHSJvr19TIh19GpDS2vl8s0lq/2MeXZPizIs9/6PhEH6hqiZGY6ye5tcPkaVgZMyOghU1YeYtWGBkpLZZBUiorbCEVMSxNuZABCYZMdX/no00th4lMpfPpFCxHNdgcZkAVFp0I0NzuYn5eMTdEtLQAulKjMW9LMlTIZZOt0U7NJOGwBtASpky8TNM3AbpeQJLosw+0ZEFBXF2P9Vh9b1mZhdzSwe1+YymqBrkNTM7hcApcLME38rSaGIeH1WN0TChkEghI90+HxoU5mz3Bx7EQzobByk0uJSoAMB48GQcDSRRm8+CWoqklVTZC58xuZOb0Hi+alYpgGK9dW4G91s2l1OnabYM/+erbk6+zIz2TE8CSKTgXJ3x4EU3QJQMb5xkriWOlljcLDQX4p1pBkhbFP2Nm1N0BtvUxNrcGE3BQulvgoOi1RVW2Q0cOBougUHlFp8Ql272vls+0BGhpFXDHqfhZI4A8YFP0cwu2SeH6SCyHg3FmVa1c1XpmViiQLKso0vr6q07+vnQE5EAqZHDjUZkWcYDB1L9Qdk0+BwYPsCAGxmHVKKJ1ZL0CGaAxy+tvJ7h1tZ1zibS9+BkwYPdLB1Ek2PG6JqZPdfPNdE9V1StewJcGRn4JMm5LB5x9ncqFEp+x6iD2FGq1BW5f1jw/AhF49Zbas6YkejZHRw8mFkgDrtgTQdet2YViB3whUgvPnImz8xM+ObRlAGy+/4MVur2HbdiPuaJbiAUhPk8nOkig4UMeZs2H8/ihhFRAgKzBnpovBA51MfiaNgYP1GyBaQwYtvgi79tTyV7VgyGBP3OjjA5CgvFKn4IcIy5c9zITxdo4eU61WMuCRQQ7eedPLzr2NpKZ6mJ/ntaRWEvx6LkLRKYOtG3LolWFSeMhPdwjickBVTd5f00jBQQf+1hiXSjVLbmNW6g3DwO9T0VQXNqVdYgU0Ncd4/d16hg9zUFOjcaXc7Jbqotsfkw557WinDtQyLMjzkjfHTU2tygfr6jl/sdNFJlb3CJFwNxT3+mckAe5UCVUzrFlwj/v13W/F7WYAvoBxW3buJZB7t8RL738M4F+wBwD+AfCAE+6E0NWUAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDIyLTA1LTIxVDAwOjM4OjE0KzAwOjAw1MIh5gAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyMi0wNS0yMVQwMDozODoxNCswMDowMKWfmVoAAAAgdEVYdHNvZnR3YXJlAGh0dHBzOi8vaW1hZ2VtYWdpY2sub3JnvM8dnQAAABh0RVh0VGh1bWI6OkRvY3VtZW50OjpQYWdlcwAxp/+7LwAAABh0RVh0VGh1bWI6OkltYWdlOjpIZWlnaHQAMTkyQF1xVQAAABd0RVh0VGh1bWI6OkltYWdlOjpXaWR0aAAxOTLTrCEIAAAAGXRFWHRUaHVtYjo6TWltZXR5cGUAaW1hZ2UvcG5nP7JWTgAAABd0RVh0VGh1bWI6Ok1UaW1lADE2NTMwOTM0OTS1BHGJAAAAD3RFWHRUaHVtYjo6U2l6ZQAwQkKUoj7sAAAAVnRFWHRUaHVtYjo6VVJJAGZpbGU6Ly8vbW50bG9nL2Zhdmljb25zLzIwMjItMDUtMjEvYzE2ZjMwY2FjYmRiYzdiNzg5NTg4N2RhNGM5YmY5MGMuaWNvLnBuZxxhfMMAAAAASUVORK5CYII=",
+      },
+      {
+        title: "Firefox WASM Github",
         url: "https://github.com/HeyPuter/firefox-wasm",
         guid: "chromedemo01",
         favicon: "https://github.githubassets.com/favicons/favicon.svg",
         faviconURL:
           "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xNiAwQzcuMTYgMCAwIDcuMTYgMCAxNkMwIDIzLjA4IDQuNTggMjkuMDYgMTAuOTQgMzEuMThDMTEuNzQgMzEuMzIgMTIuMDQgMzAuODQgMTIuMDQgMzAuNDJDMTIuMDQgMzAuMDQgMTIuMDIgMjguNzggMTIuMDIgMjcuNDRDOCAyOC4xOCA2Ljk2IDI2LjQ2IDYuNjQgMjUuNTZDNi40NiAyNS4xIDUuNjggMjMuNjggNSAyMy4zQzQuNDQgMjMgMy42NCAyMi4yNiA0Ljk4IDIyLjI0QzYuMjQgMjIuMjIgNy4xNCAyMy40IDcuNDQgMjMuODhDOC44OCAyNi4zIDExLjE4IDI1LjYyIDEyLjEgMjUuMkMxMi4yNCAyNC4xNiAxMi42NiAyMy40NiAxMy4xMiAyMy4wNkM5LjU2IDIyLjY2IDUuODQgMjEuMjggNS44NCAxNS4xNkM1Ljg0IDEzLjQyIDYuNDYgMTEuOTggNy40OCAxMC44NkM3LjMyIDEwLjQ2IDYuNzYgOC44MiA3LjY0IDYuNjJDNy42NCA2LjYyIDguOTggNi4yIDEyLjA0IDguMjZDMTMuMzIgNy45IDE0LjY4IDcuNzIgMTYuMDQgNy43MkMxNy40IDcuNzIgMTguNzYgNy45IDIwLjA0IDguMjZDMjMuMSA2LjE4IDI0LjQ0IDYuNjIgMjQuNDQgNi42MkMyNS4zMiA4LjgyIDI0Ljc2IDEwLjQ2IDI0LjYgMTAuODZDMjUuNjIgMTEuOTggMjYuMjQgMTMuNCAyNi4yNCAxNS4xNkMyNi4yNCAyMS4zIDIyLjUgMjIuNjYgMTguOTQgMjMuMDZDMTkuNTIgMjMuNTYgMjAuMDIgMjQuNTIgMjAuMDIgMjYuMDJDMjAuMDIgMjguMTYgMjAgMjkuODggMjAgMzAuNDJDMjAgMzAuODQgMjAuMyAzMS4zNCAyMS4xIDMxLjE4QzI3LjQyIDI5LjA2IDMyIDIzLjA2IDMyIDE2QzMyIDcuMTYgMjQuODQgMCAxNiAwVjBaIiBmaWxsPSIjMjQyOTJFIi8+Cjwvc3ZnPgo=",
-      },
-      {
-        title: "Puter",
-        url: "https://puter.com/",
-        guid: "chromedemo02",
-        favicon: "https://puter.com/dist/favicons/favicon-32x32.png",
-        faviconURL:
-          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH5gUVACYT5I64GAAABTxJREFUWMPtl1tsFGUUx3/fzOyl7XZ3WyiFFpGGAEFQBAQpBF/wAkRQjIRLMDbBcFMJGuVBghIw3AXUVKIhES+AAikFgRAjCVikJERuVrRcWlp7s9fd7XZ3Z2Z3xodpoYRuF4gGHziPM/Od73/O+Z//OSPw/mlyH026n5c/APC/AKDc9QkDMNp5KwkQ7c/MDi4LK6w7DC0xgFi7cwFCwKiRdnJHJwExis8E+KNUMO7JJIYMciBL0NAU4fjJNqqqFJBFQvcibhua4LDBhPFORo+w4fVEUWQb06Z4aW4xiEYFHo9KRWWU4Y+6Ka+IEggYDMhRCLQGWbW+icM/mpii+1Qo8S5P90q893Yas2ek8tsljYrKKP0eUjhwxMeHmwKkeRT278wmOyvKwrfqOH5SRdNM+mbZWLo4nc1rexOOVHPshNRtOboEIAQsWZDG9GkpLFvxNwWHwoTD4EwSCNMgHITJE5NITtZ5dWEtxcUGKBYfyq7rLFtRT6ork8WveSk67UPT41f6dmwGDBviYO6sFDZurWXn9yHCEevLiGoSDgs86YLnnk6m5PcQ5y9oVq3FTY+RsEHhoSCPDU2if3YUYuJuAJiMGeWkrS1E4eHQrc4NyB3joODbPkydlMK4sR7yP3KT01+HzkwSgopKneTkZBbOc+H2aLe+7xYAkOyU8PlUWts6nTIhK0th85oMgm06L82tZuHSJvr19TIh19GpDS2vl8s0lq/2MeXZPizIs9/6PhEH6hqiZGY6ye5tcPkaVgZMyOghU1YeYtWGBkpLZZBUiorbCEVMSxNuZABCYZMdX/no00th4lMpfPpFCxHNdgcZkAVFp0I0NzuYn5eMTdEtLQAulKjMW9LMlTIZZOt0U7NJOGwBtASpky8TNM3AbpeQJLosw+0ZEFBXF2P9Vh9b1mZhdzSwe1+YymqBrkNTM7hcApcLME38rSaGIeH1WN0TChkEghI90+HxoU5mz3Bx7EQzobByk0uJSoAMB48GQcDSRRm8+CWoqklVTZC58xuZOb0Hi+alYpgGK9dW4G91s2l1OnabYM/+erbk6+zIz2TE8CSKTgXJ3x4EU3QJQMb5xkriWOlljcLDQX4p1pBkhbFP2Nm1N0BtvUxNrcGE3BQulvgoOi1RVW2Q0cOBougUHlFp8Ql272vls+0BGhpFXDHqfhZI4A8YFP0cwu2SeH6SCyHg3FmVa1c1XpmViiQLKso0vr6q07+vnQE5EAqZHDjUZkWcYDB1L9Qdk0+BwYPsCAGxmHVKKJ1ZL0CGaAxy+tvJ7h1tZ1zibS9+BkwYPdLB1Ek2PG6JqZPdfPNdE9V1StewJcGRn4JMm5LB5x9ncqFEp+x6iD2FGq1BW5f1jw/AhF49Zbas6YkejZHRw8mFkgDrtgTQdet2YViB3whUgvPnImz8xM+ObRlAGy+/4MVur2HbdiPuaJbiAUhPk8nOkig4UMeZs2H8/ihhFRAgKzBnpovBA51MfiaNgYP1GyBaQwYtvgi79tTyV7VgyGBP3OjjA5CgvFKn4IcIy5c9zITxdo4eU61WMuCRQQ7eedPLzr2NpKZ6mJ/ntaRWEvx6LkLRKYOtG3LolWFSeMhPdwjickBVTd5f00jBQQf+1hiXSjVLbmNW6g3DwO9T0VQXNqVdYgU0Ncd4/d16hg9zUFOjcaXc7Jbqotsfkw557WinDtQyLMjzkjfHTU2tygfr6jl/sdNFJlb3CJFwNxT3+mckAe5UCVUzrFlwj/v13W/F7WYAvoBxW3buJZB7t8RL738M4F+wBwD+AfCAE+6E0NWUAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDIyLTA1LTIxVDAwOjM4OjE0KzAwOjAw1MIh5gAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyMi0wNS0yMVQwMDozODoxNCswMDowMKWfmVoAAAAgdEVYdHNvZnR3YXJlAGh0dHBzOi8vaW1hZ2VtYWdpY2sub3JnvM8dnQAAABh0RVh0VGh1bWI6OkRvY3VtZW50OjpQYWdlcwAxp/+7LwAAABh0RVh0VGh1bWI6OkltYWdlOjpIZWlnaHQAMTkyQF1xVQAAABd0RVh0VGh1bWI6OkltYWdlOjpXaWR0aAAxOTLTrCEIAAAAGXRFWHRUaHVtYjo6TWltZXR5cGUAaW1hZ2UvcG5nP7JWTgAAABd0RVh0VGh1bWI6Ok1UaW1lADE2NTMwOTM0OTS1BHGJAAAAD3RFWHRUaHVtYjo6U2l6ZQAwQkKUoj7sAAAAVnRFWHRUaHVtYjo6VVJJAGZpbGU6Ly8vbW50bG9nL2Zhdmljb25zLzIwMjItMDUtMjEvYzE2ZjMwY2FjYmRiYzdiNzg5NTg4N2RhNGM5YmY5MGMuaWNvLnBuZxxhfMMAAAAASUVORK5CYII=",
       },
     ];
 
@@ -354,6 +354,32 @@ async function start(): Promise<void> {
     await gecko.evalChrome(
       `setToolbarVisibility(document.getElementById('PersonalToolbar'), 'always'); 'ok'`,
     );
+
+    // Default the search engine to DuckDuckGo. Seeded once (localStorage-gated)
+    // so a user picking a different engine later isn't overridden on the next
+    // visit. Runs async behind Services.search.init(); fire-and-forget.
+    const SEARCH_SEEDED_KEY = "chrome-demo-search-seeded";
+    if (!localStorage.getItem(SEARCH_SEEDED_KEY)) {
+      localStorage.setItem(SEARCH_SEEDED_KEY, "1");
+      void gecko.evalChrome(`(() => {
+        (async () => {
+          await Services.search.init();
+          const engine = Services.search.getEngineByName('DuckDuckGo');
+          if (!engine) throw new Error('DuckDuckGo engine not found');
+          await Services.search.setDefault(engine, Services.search.CHANGE_REASON.USER);
+        })().catch(e => console.error('search seed: ' + e));
+        return 'search-seed-started';
+      })()`);
+    }
+
+    // Autoload the default page into the FIRST tab (the one browser.xhtml opened
+    // at startup, still selected at this point). Only this initial tab is driven;
+    // new tabs (Ctrl+T / +) keep the regular about:newtab. Not awaited so the
+    // chrome appears immediately while the page loads.
+    void gecko.evalChrome(
+      `openTrustedLinkIn('https://developer.puter.com/', 'current'); 'ok'`,
+    );
+
     canvas.classList.add("ready");
     splash.classList.add("done");
     canvas.focus();
