@@ -184,6 +184,55 @@ input {
   line-height: 1.6;
 }
 
+/* --- "powered by" badge -------------------------------------------------- */
+.powered-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 28px;
+  padding: 7px 15px;
+  border: 1px solid #e6e8ec;
+  border-radius: 999px;
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.powered-badge strong {
+  color: #111827;
+  font-weight: 600;
+}
+
+.powered-badge:hover {
+  border-color: #1d49e7;
+  background: rgba(29, 73, 231, 0.05);
+  color: #1d49e7;
+}
+
+.powered-badge:hover strong {
+  color: #1d49e7;
+}
+
+.powered-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #1d49e7;
+  box-shadow: 0 0 0 3px rgba(29, 73, 231, 0.15);
+}
+
+/* Hidden while launching so the log fills the viewport without scrolling. */
+#splash-shell[data-phase="console"] .powered-badge {
+  display: none;
+}
+
 /* --- launch panel (loading / ready / console) ---------------------------- */
 .launch-panel {
   width: 100%;
