@@ -311,21 +311,48 @@ input {
 .start-btn {
   appearance: none;
   border: none;
-  border-radius: 10px;
-  background: #1d49e7;
+  border-radius: 12px;
   color: #fff;
-  font-size: 15px;
-  font-weight: 500;
-  padding: 13px 34px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 16px 44px;
   cursor: pointer;
+  /* Soft animated gradient that drifts side to side, with a gentle breathing
+     glow -- reads as "live / clickable" without being loud. */
+  background: linear-gradient(120deg, #1d49e7, #4f74ff, #1d49e7);
+  background-size: 220% 100%;
+  animation:
+    launch-drift 5s ease-in-out infinite,
+    launch-glow 2.8s ease-in-out infinite;
   transition:
-    background-color 0.15s ease,
-    transform 0.15s ease;
+    transform 0.15s ease,
+    filter 0.15s ease;
+}
+
+@keyframes launch-drift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes launch-glow {
+  0%,
+  100% {
+    box-shadow: 0 4px 16px rgba(29, 73, 231, 0.22);
+  }
+  50% {
+    box-shadow: 0 6px 28px rgba(29, 73, 231, 0.45);
+  }
 }
 
 .start-btn:hover:not(:disabled) {
-  background: #1a41d1;
   transform: translateY(-1px);
+  filter: brightness(1.06);
 }
 
 .start-btn:active:not(:disabled) {
@@ -335,6 +362,16 @@ input {
 .start-btn:disabled {
   opacity: 0.55;
   cursor: default;
+  /* Calm the button once it's disabled (loading / starting). */
+  background: #1d49e7;
+  animation: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .start-btn {
+    animation: none;
+  }
 }
 
 /* --- advanced options disclosure ----------------------------------------- */
