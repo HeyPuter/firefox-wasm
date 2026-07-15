@@ -17,10 +17,12 @@ declare global {
   }
 }
 
-// VITE_DISABLE_BRANDING strips the Firefox logo (the hero image and the
-// favicon, which use the same artwork).
+// VITE_DISABLE_BRANDING strips the Firefox logo: the hero tile (and the "×"
+// connector, leaving just the WebAssembly mark) plus the favicon, which uses
+// the same artwork.
 if (import.meta.env.VITE_DISABLE_BRANDING) {
-  document.querySelector(".project-logo")?.remove();
+  document.querySelector(".firefox-tile")?.remove();
+  document.querySelector(".logo-x")?.remove();
   document.getElementById("favicon")?.remove();
 }
 

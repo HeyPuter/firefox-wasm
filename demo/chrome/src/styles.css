@@ -157,14 +157,39 @@ input {
   overflow-y: auto;
 }
 
-.project-logo {
+.logo-lockup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 0 0 30px;
+}
+
+.logo-tile {
   width: 76px;
   height: 76px;
   padding: 14px;
-  margin: 0 0 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: linear-gradient(180deg, #fcfcfd 0%, #eff1f4 100%);
   border: 1px solid #ececec;
   border-radius: 20px;
+}
+
+.project-logo,
+.wasm-mark {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.logo-x {
+  color: #c4c8cf;
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 1;
+  user-select: none;
 }
 
 .splash-title {

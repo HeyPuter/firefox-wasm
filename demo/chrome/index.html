@@ -62,7 +62,33 @@
       </header>
       <main class="stage">
         <div id="splash-shell" class="stage-inner" data-phase="loading">
-          <img class="project-logo" src="logo.webp" alt="Firefox" />
+          <div class="logo-lockup">
+            <span class="logo-tile firefox-tile">
+              <img class="project-logo" src="logo.webp" alt="Firefox" />
+            </span>
+            <span class="logo-x" aria-hidden="true">&times;</span>
+            <span class="logo-tile wasm-tile">
+              <svg
+                class="wasm-mark"
+                viewBox="97.43 0 107.62 107.62"
+                xmlns="http://www.w3.org/2000/svg"
+                role="img"
+                aria-label="WebAssembly"
+              >
+                <rect x="97.43" y="0" width="107.62" height="107.62" fill="#fff" />
+                <path
+                  fill="#654ff0"
+                  transform="translate(-0.21)"
+                  d="M163.76,0c0,.19,0,.38,0,.58a12.34,12.34,0,0,1-24.68,0c0-.2,0-.39,0-.58H97.64V107.62H205.26V0ZM149,96.1l-5.24-25.93h-.09L138,96.1h-7.22L122.6,58h7.13l4.88,25.93h.09L140.58,58h6.67l5.28,26.25h.09L158.19,58h7L156.1,96.1Zm39.26,0-2.43-8.48H173l-1.87,8.48H164L173.22,58h11.25l11.21,38.1Z"
+                />
+                <polygon
+                  fill="#654ff0"
+                  transform="translate(-0.21)"
+                  points="177.3 67.39 174.19 81.37 183.87 81.37 180.3 67.39 177.3 67.39"
+                />
+              </svg>
+            </span>
+          </div>
           <h1 id="project-title" class="splash-title">Firefox in WebAssembly</h1>
           <p class="project-copy">
             The Gecko engine compiled to WebAssembly. The real Firefox
