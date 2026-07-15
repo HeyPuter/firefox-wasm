@@ -18,7 +18,7 @@
         <div class="nav-left">
           <a
             class="nav-brand"
-            href="https://puter.com"
+            href="https://developer.puter.com/"
             target="_blank"
             rel="noreferrer"
             aria-label="Puter"
@@ -41,7 +41,7 @@
         <div class="nav-links">
           <a
             class="nav-link"
-            href="https://github.com/MercuryWorkshop/firefox-wasm"
+            href="https://github.com/HeyPuter/firefox-wasm"
             target="_blank"
             rel="noreferrer"
           >
@@ -58,75 +58,19 @@
             </svg>
             GitHub
           </a>
-          <button id="nav-launch" class="nav-cta" type="button" disabled>
-            Launch Firefox
-          </button>
         </div>
       </header>
-      <div class="hero">
-        <div id="splash-shell" class="hero-inner" data-phase="predownload">
-          <div class="hero-text" aria-labelledby="project-title">
-            <img class="project-logo" src="logo.webp" alt="gecko.js" />
-            <h1 id="project-title" class="splash-title">
-              Firefox in WebAssembly
-            </h1>
-            <p class="project-copy">
-              This is the gecko engine compiled to WebAssembly, running the
-              actual firefox UI in a web browser. All js execution and rendering
-              is done inside webassembly, instead of the host browser.
-            </p>
-            <div class="project-facts" aria-label="Project highlights">
-              <div class="fact">
-                <strong>Assets</strong>
-                <span>Downloaded once per visit, served from memory.</span>
-              </div>
-              <div class="fact">
-                <strong>Engine</strong>
-                <span>Firefox/Gecko compiled to WebAssembly.</span>
-              </div>
-              <div class="fact">
-                <strong>Network</strong>
-                <span>Tabs load web content through a Wisp server.</span>
-              </div>
-            </div>
-            <section class="startup-console" aria-label="Startup console">
-              <p class="phase-kicker">Startup log</p>
-              <div
-                id="console-output"
-                class="console-box"
-                role="log"
-                aria-label="Startup console output"
-              ></div>
-            </section>
-          </div>
+      <main class="stage">
+        <div id="splash-shell" class="stage-inner" data-phase="loading">
+          <img class="project-logo" src="logo.webp" alt="Firefox" />
+          <h1 id="project-title" class="splash-title">Firefox in WebAssembly</h1>
+          <p class="project-copy">
+            The Gecko engine compiled to WebAssembly. The real Firefox
+            interface, rendering entirely inside this browser tab.
+          </p>
 
-          <div id="stage-card" class="stage-card" data-phase="predownload">
-            <section
-              class="phase-section phase-predownload"
-              aria-label="Download browser assets"
-            >
-              <p class="phase-kicker">Phase 1</p>
-              <h2 class="phase-title">Download browser files</h2>
-              <p class="splash-status">
-                The Firefox user interface ships as a ~18&nbsp;MB download,
-                fetched fresh on every visit and served from memory.
-              </p>
-              <div class="splash-actions">
-                <button id="download-btn" type="button" class="start-btn">
-                  Download
-                </button>
-              </div>
-            </section>
-
-            <section
-              class="phase-section phase-loading"
-              aria-label="Preparing browser assets"
-            >
-              <p class="phase-kicker">Phase 2</p>
-              <h2 class="phase-title">Preparing browser files</h2>
-              <p id="splash-status" class="splash-status">
-                Preparing chrome assets
-              </p>
+          <div id="stage-card" class="launch-panel" data-phase="loading">
+            <div class="panel-loading" aria-label="Loading Firefox">
               <div
                 class="progress-track"
                 role="progressbar"
@@ -137,58 +81,65 @@
                 <div id="progress-fill" class="progress-fill"></div>
               </div>
               <div class="progress-meta">
-                <span id="progress-phase">Checking</span>
-                <span id="progress-percent">0%</span>
+                <span id="progress-phase">Preparing</span>
+                <span id="progress-percent"></span>
               </div>
-            </section>
+              <p id="splash-status" class="splash-status">Preparing Firefox…</p>
+            </div>
 
-            <section
-              class="phase-section phase-ready"
-              aria-label="Launch options"
-            >
-              <p class="phase-kicker">Phase 3</p>
-              <h2 class="phase-title">Launch options</h2>
-              <div class="splash-controls">
-                <div class="flags-group">
-                  <span>Flags</span>
+            <div class="panel-ready" aria-label="Launch">
+              <button id="start-btn" type="button" class="start-btn">
+                Launch Firefox
+              </button>
+              <details class="advanced">
+                <summary>Advanced options</summary>
+                <div class="splash-controls">
                   <label class="option-card">
                     <input type="checkbox" id="opt-gpu" />
                     <span class="option-copy">
-                      <strong>Use GPU acceleration</strong>
-                      <span>Uses webgl based rendering for web contents</span>
+                      <strong>GPU acceleration</strong>
+                      <span>WebGL-based rendering for web content.</span>
                     </span>
                   </label>
                   <label class="option-card">
                     <input type="checkbox" id="opt-jit" />
                     <span class="option-copy">
                       <strong>Enable JIT</strong>
-                      <span>Experimental JS -> WASM JIT. Will be buggy</span>
+                      <span>Experimental JS → WASM JIT. Expect bugs.</span>
                     </span>
                   </label>
+                  <label class="wisp-field">
+                    <span>Wisp server</span>
+                    <span class="wisp-copy">
+                      WebSocket proxy that tabs load web content through.
+                    </span>
+                    <input
+                      type="text"
+                      id="opt-wisp"
+                      spellcheck="false"
+                      autocomplete="off"
+                      aria-label="Wisp server"
+                    />
+                  </label>
+                  <p class="branding-note">
+                    Web content is proxied through a Puter-hosted Wisp server.
+                  </p>
                 </div>
-                <label class="wisp-field">
-                  <span>Wisp server</span>
-                  <span class="wisp-copy">
-                    Websocket proxy endpoint that tabs load web content through.
-                  </span>
-                  <input
-                    type="text"
-                    id="opt-wisp"
-                    spellcheck="false"
-                    autocomplete="off"
-                    aria-label="Wisp server"
-                  />
-                </label>
-              </div>
-              <div class="splash-actions">
-                <button id="start-btn" type="button" class="start-btn">
-                  Start
-                </button>
-              </div>
-            </section>
+              </details>
+            </div>
           </div>
+
+          <section class="startup-console" aria-label="Startup console">
+            <p class="phase-kicker">Startup log</p>
+            <div
+              id="console-output"
+              class="console-box"
+              role="log"
+              aria-label="Startup console output"
+            ></div>
+          </section>
         </div>
-      </div>
+      </main>
     </section>
     <canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
     <script type="module" src="/src/main.ts"></script>
