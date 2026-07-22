@@ -2,3 +2,6 @@
 spidermonkey.js/build/
 # uBlock source checkout — only needed to rebuild build/compile-bundle.iife.js
 ubo/ubo-src/
+# web-tooling-benchmark built bundles (32MB each); regenerate with build-cli.sh
+webtooling/cli.js
+webtooling/browser.js

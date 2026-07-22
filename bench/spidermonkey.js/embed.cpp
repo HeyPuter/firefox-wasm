@@ -111,9 +111,20 @@ static bool ReportError(JSContext* cx) {
       JS::RootedString s(cx, JS::ToString(cx, exn));
       if (s) {
         JS::UniqueChars c = JS_EncodeStringToUTF8(cx, s);
-        if (c) fprintf(stderr, "[embed] uncaught: %s\n", c.get());
+        if (c) { fprintf(stderr, "[embed] uncaught: %s\n", c.get()); return false; }
       }
+      // ToString threw / failed: still report SOMETHING (class + value tag) --
+      // a silent exit-1 is undebuggable.
+      JS_ClearPendingException(cx);
+      const char* what = exn.isObject() ? JS::GetClass(&exn.toObject())->name
+                        : exn.isString() ? "string"
+                        : exn.isNumber() ? "number" : "other";
+      fprintf(stderr, "[embed] uncaught (unstringifiable): kind=%s\n", what);
+    } else {
+      fprintf(stderr, "[embed] uncaught: <uncatchable/OOM — StealPendingExceptionStack failed>\n");
     }
+  } else {
+    fprintf(stderr, "[embed] script failed with NO pending exception (quit()/uncatchable)\n");
   }
   return false;
 }
@@ -307,6 +318,29 @@ static bool InWasmJit(JSContext* cx, unsigned argc, JS::Value* vp) {
   return true;
 }
 
+// __drainJit(): compile any functions deferred by GECKO_WJ_DEFERCOMPILE. Models a
+// browser event-loop task boundary (where compile happens off the load critical
+// path). Harnesses call it between iterations to validate throughput preservation.
+static bool DrainJit(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  js::wasm::WasmJitDrainDeferred();
+  args.rval().setUndefined();
+  return true;
+}
+
+// __wjStats(): return a JSON string of the JIT's always-on counters (entry
+// states, JIT/deopt totals + rate, top deopt fns, deopt-by-op). Printf-free
+// introspection (task #57) -- queryable mid-run from JS / browser DevTools.
+static bool WjStats(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  static char buf[8192];
+  js::wasm::WJStatsJSON(buf, sizeof(buf));
+  JSString* str = JS_NewStringCopyZ(cx, buf);
+  if (!str) return false;
+  args.rval().setString(str);
+  return true;
+}
+
 // version()/options(): accepted no-op stubs (used by a handful of tests).
 static bool NoopUndef(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
@@ -328,6 +362,8 @@ static bool DefineShellGlobal(JSContext* cx, JS::HandleObject global) {
                                   /*disableOOMFunctions=*/false))
     return false;
   return JS_DefineFunction(cx, global, "wjTraceDump", WjTraceDump, 0, 0) &&
+         JS_DefineFunction(cx, global, "__drainJit", DrainJit, 0, 0) &&
+         JS_DefineFunction(cx, global, "__wjStats", WjStats, 0, 0) &&
          JS_DefineFunction(cx, global, "print", PrintImpl, 1, 0) &&
          JS_DefineFunction(cx, global, "readWasm", ReadWasmImpl, 1, 0) &&
          JS_DefineFunction(cx, global, "assertEq", AssertEq, 2, 0) &&
@@ -383,6 +419,10 @@ static bool EvalFile(JSContext* cx, const char* path) {
   JS::RootedValue rval(cx);
   bool ok = EvalUtf8(cx, buf.data(), buf.size() - 1, path, &rval);
   gScriptDir = saved;
+  // Top-level script finished == a task boundary (JS stack empty). Compile any
+  // functions GECKO_WJ_DEFERCOMPILE deferred off this task's critical path. Models
+  // the browser event loop draining between tasks. No-op unless deferral queued.
+  js::wasm::WasmJitDrainDeferred();
   if (!ok) {
     if (gQuitting) return false;
     return ReportError(cx);
@@ -413,6 +453,13 @@ int main(int argc, char** argv) {
   if (!cx) { fprintf(stderr, "[embed] NewContext failed errno=%d\n", errno); return 1; }
   if (!JS::InitSelfHostedCode(cx)) { fprintf(stderr, "[embed] InitSelfHostedCode failed\n"); return 1; }
   JS_SetGCParameter(cx, JSGC_MAX_BYTES, 0xffffffff);
+  // Quota is FAR below the wasm -sSTACK_SIZE (64MB) for two reasons: (1) the huge
+  // headroom means deep JS recursion throws a catchable "too much recursion" long
+  // before the native wasm stack overflows into an uncatchable `unreachable` trap
+  // (the web-tooling init bug); (2) under the JIT, recursion bounces wasm->JS->wasm
+  // through the call bridge and is bounded by the OUTER V8 stack (~node --stack-size,
+  // ~8MB) -- a quota larger than that overflows V8 uncatchably (regressed cdjs). 8MB
+  // satisfies both: catchable-before-trap AND within the V8 bridge budget.
   JS_SetNativeStackQuota(cx, 8 * 1024 * 1024);
   // Diagnostic: disable generational GC (nursery) entirely -> all objects are
   // tenured and never moved by a minor GC. Used to confirm whether a mid-render

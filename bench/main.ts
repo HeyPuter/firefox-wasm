@@ -65,6 +65,12 @@ if (process.argv[2] === '__exec') {
     let rc = 0;
     try { rc = M.callMain(files); } catch (e: any) {
       console.error('[main __exec] callMain threw:', e?.message ?? e);
+      // A wasm trap's stack names the wasm frames; a trap inside a JIT'd module
+      // is attributable (the module's fns are compiled per JS function).
+      if (e?.stack) console.error(String(e.stack).split('\n').slice(0, 25).join('\n'));
+      // Post-trap forensics: last helper kind/site + runtime state (the trap kills
+      // the wasm stack but the module memory survives).
+      try { M._WJDumpCrashState?.(); } catch {}
       rc = 1;
     }
     process.exit(rc || 0);
@@ -115,6 +121,10 @@ function runEmbed(files: string[], opts: { env?: Record<string, string>; cwd?: s
   const r = spawnSync(process.execPath,
     ['--no-liftoff', '--stack-size=8000', SELF, '__exec', ...files],
     { encoding: 'utf8', env, cwd: opts.cwd ?? ROOT, timeout: (opts.timeoutS ?? 180) * 1000, maxBuffer: 256 * 1024 * 1024 });
+  // WJ_ECHO=1 forwards the child's stderr (JIT debug dumps: GECKO_WJWARP_DUMP,
+  // GECKO_WJ_SITEHIST, etc.) to this process so it's visible; otherwise it's
+  // captured for parsing only (e.g. --bails -> bailSurvey).
+  if (process.env.WJ_ECHO) process.stderr.write(r.stderr ?? '');
   return { out: r.stdout ?? '', err: r.stderr ?? '', code: r.status };
 }
 
@@ -324,6 +334,32 @@ function runWasm(names: string[], f: ReturnType<typeof parseFlags>) {
   if (fail) process.exit(1);
 }
 
+// Web Tooling Benchmark (v8/web-tooling-benchmark): real dev tools (acorn, babel,
+// typescript, prettier, terser, ...) running their actual code. dist/cli.js is a
+// self-contained JS-shell bundle; intl-shim.js stubs Intl (embed is --without-intl-api),
+// and a `var ONLY="<tool>"` prelude restricts to one tool. NOTE: runs under PBL (--pbl);
+// under JIT it currently hits a miscompile (unreachable trap) in a bundle-init function.
+const WT = path.join(BENCH, 'webtooling');
+function runWebtooling(names: string[], f: ReturnType<typeof parseFlags>) {
+  const files = [path.join(WT, 'intl-shim.js')];
+  const only = names[0];
+  if (only) { const p = path.join(os.tmpdir(), `wtb_only_${only}.js`); fs.writeFileSync(p, `var ONLY=${JSON.stringify(only)};\n`); files.push(p); }
+  files.push(path.join(WT, 'cli.js'));
+  console.log('# web tooling benchmark (runs/s, higher=better)' + (f.pbl ? '  [PBL]' : '  [JIT]') + (only ? `  only=${only}` : ''));
+  const r = runEmbed(files, { env: baseEnv(f, f.pbl), timeoutS: Math.max(f.timeoutS, 900) });
+  const lines = r.out.split('\n').filter((l) => /runs\/s|Geometric mean|Running/.test(l));
+  console.log(lines.join('\n'));
+  // A run with no score line is a SILENT failure (validation fail / child crash);
+  // surface the child's exit code + stderr tail automatically so the flake
+  // self-diagnoses instead of hiding behind WJ_ECHO (see task #58).
+  if (!lines.some((l) => l.includes('runs/s'))) {
+    const errTail = r.err.trim().split('\n').slice(-32).join('\n  ');
+    console.log(`(NO SCORE) child exit=${r.code}${/unreachable/.test(r.err) ? ' — unreachable trap (JIT miscompile?)' : ''}`);
+    console.log(`stdout tail: ${JSON.stringify(r.out.trim().split('\n').slice(-4).join(' | '))}`);
+    if (errTail) console.log(`stderr tail:\n  ${errTail}`);
+  }
+}
+
 const JITTEST = path.join(BENCH, 'jittest');
 function runJittest(rest: string[], f: ReturnType<typeof parseFlags>) {
   // Run SpiderMonkey's own jit-test suite against the wasm embed: jit_test.py drives
@@ -430,6 +466,39 @@ function runDisasTest(names: string[], f: ReturnType<typeof parseFlags>) {
   if (fail) process.exit(1);
 }
 
+// diffcheck <file.js>: differential JIT-vs-PBL execution of one script.
+// 1) result diff: whole-script output under JIT vs GECKO_NOWASMJIT.
+// 2) per-call diff: re-run with GECKO_WJ_VERIFY (return values re-executed in the
+//    interpreter) + GECKO_WJ_VERIFYMUT (this/arg slot + dense-element side effects),
+//    reporting each [wb-VERIFY] MISMATCH with fn/line. Exit 1 on any divergence.
+function runDiffcheck(rest: string[], f: ReturnType<typeof parseFlags>) {
+  const files = rest.filter((r) => fs.existsSync(r));
+  if (!files.length) { console.error('diffcheck: no existing files in: ' + rest.join(' ')); process.exit(2); }
+  const jit = runEmbed(files, { env: baseEnv(f, false), timeoutS: f.timeoutS });
+  const pbl = runEmbed(files, { env: baseEnv(f, true), timeoutS: f.timeoutS });
+  let bad = 0;
+  if (jit.out !== pbl.out) {
+    bad++;
+    console.log('OUTPUT DIVERGES:');
+    const j = jit.out.trim().split('\n'), p = pbl.out.trim().split('\n');
+    for (let i = 0; i < Math.max(j.length, p.length); i++) {
+      if (j[i] !== p[i]) { console.log(`  line ${i + 1}: jit=${JSON.stringify(j[i])} pbl=${JSON.stringify(p[i])}`); if (bad++ > 8) break; }
+    }
+  } else {
+    console.log('output identical (' + jit.out.trim().split('\n').length + ' lines)');
+  }
+  const ver = runEmbed(files, { env: { ...baseEnv(f, false), GECKO_WJ_VERIFY: '1', GECKO_WJ_VERIFYMUT: '1' }, timeoutS: f.timeoutS * 4 });
+  const mism = ver.err.split('\n').filter((l) => l.includes('MISMATCH'));
+  if (mism.length) {
+    bad += mism.length;
+    console.log(`per-call verifier: ${mism.length} mismatches (first 10):`);
+    for (const m of mism.slice(0, 10)) console.log('  ' + m);
+  } else {
+    console.log('per-call verifier: clean (returns + side effects match interpreter)');
+  }
+  if (bad) process.exit(1);
+}
+
 function main() {
   const [suite, ...argv] = process.argv.slice(2);
   const f = parseFlags(argv);
@@ -442,17 +511,20 @@ function main() {
     case 'disas': return runDisas(f.rest, f);
     case 'disastest': return runDisasTest(f.rest, f);
     case 'wasm': return runWasm(f.rest, f);
+    case 'webtooling': case 'wtb': return runWebtooling(f.rest, f);
     case 'jittest': return runJittest(f.rest, f);
+    case 'diffcheck': return runDiffcheck(f.rest, f);
     case 'list':
       console.log('octane:    ' + Object.keys(OCT).join(' '));
       console.log('jetstream: ' + fs.readdirSync(JETSTREAM).filter((x) => x.endsWith('.js') && x !== 'jetstream-driver.js').map((x) => x.slice(0, -3)).join(' '));
       console.log('micro:     ' + fs.readdirSync(MICRO).filter((x) => x.endsWith('.js') && x !== 'micro-driver.js').map((x) => x.slice(0, -3)).join(' '));
       console.log('disastest: ' + (fs.existsSync(DISAS) ? fs.readdirSync(DISAS).filter((x) => x.endsWith('.js')).map((x) => x.slice(0, -3)).join(' ') : ''));
       console.log('wasm:      difftest atomictest tramptest emtest rusttest');
+      console.log('webtooling: acorn babel babylon buble chai coffeescript espree esprima jshint lebab postcss prepack prettier source-map terser typescript uglify-js  (or none=all)');
       console.log('realapp:   acorn marked');
       return;
     default:
-      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|disas|disastest|wasm|jittest|list> [names...] [flags]\n'
+      console.error('usage: node bench/main.ts <octane|jetstream|micro|ubo|realapp|webtooling|disas|disastest|wasm|jittest|list> [names...] [flags]\n'
         + '  disas <file.js> --fn NAME [--grep RE]   show the WAT the JIT emitted for a function\n'
         + '  disastest [names]                       run bench/disas/*.js codegen CHECK tests\n'
         + '  flags: --pbl --ab --bails --iters N --warm N --gczeal N --nursery-mb N --timeout S');

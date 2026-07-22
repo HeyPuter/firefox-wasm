@@ -11,3 +11,78 @@ asm.js
 ion/recover-arguments.js
 ion/recover-inline-arguments.js
 ion/recover-inline-arguments-debugger.js
+# Explicit Resource Management (`using`/`await using`/disposal) -- not implemented
+# in this embed; the whole feature dir can't pass regardless of JIT (2026-07-03 sweep):
+explicit-resource-management
+# Shell/GC introspection builtins the embed lacks (getSelfHostedValue, blackRoot,
+# gczeal, newGlobal/cross-realm, evaluate({envChainObject})) -- 2026-07-03 sweep,
+# verified fail with ALL JIT ops disabled (not JIT codegen bugs):
+basic/packed-arrays.js
+gc/test-root-arrays.js
+arguments/cross-realm-iterator-lookup.js
+environments/evaluate_envChainObject.js
+# Ion-TIER-specific spread-call invalidation/deopt-count assertions (this build has
+# no Ion tier to invalidate; verified identical fail with GECKO_WJ_NOOPTSPREAD):
+ion/spreadcall-not-optimized-dynamic-1.js
+ion/spreadcall-not-optimized-dynamic-3.js
+ion/spreadcall-not-optimized-dynamic-5b.js
+ion/spreadcall-not-optimized-dynamic-6b.js
+# Too-slow spread maxarg tests (upstream FIXME: "ASAN and debug builds run this too
+# slowly"); our --no-liftoff/PBL warmup likewise exceeds the timeout, not a bug:
+spread/spread-call-maxarg.js
+spread/spread-call-near-maxarg.js
+# embed lacks the createIsHTMLDDA shell builtin (harness gap, not JIT):
+# all 21 truthiness/ tests need it -> exclude the whole directory.
+truthiness
+# embed lacks serialize/deserialize/evalcx shell builtins (harness gap):
+structured-clone
+# sharedbuf: several need worker/shared-memory shell natives; the one observed
+# failing (size-with-uninitialized) also needs shell internals -> exclude file:
+sharedbuf/size-with-uninitialized.js
+# 2026-07-10: shell-intrinsic / SAB harness gaps (identical fail under PBL)
+typedarray/bug1518764.js
+typedarray/bug1520536.js
+typedarray/bug1912485-1.js
+typedarray/bug1912485-2.js
+typedarray/construct-with-growable-sharedarraybuffer.js
+typedarray/growable-sharedarraybuffer-bytelength.js
+typedarray/error-messages.js
+typedarray/resizable-typedarray-bytelength-with-sab.js
+typedarray/resizable-typedarray-byteoffset-sab.js
+typedarray/resizable-typedarray-get-elem-with-sab.js
+typedarray/resizable-typedarray-has-elem-with-sab.js
+typedarray/resizable-typedarray-length-with-sab.js
+typedarray/resizable-typedarray-intrinsic-typedArrayLength.js
+typedarray/resizable-typedarray-set-elem-with-sab.js
+typedarray/subarray-scalar-replace.js
+typedarray/arraybuffer-transfer.js
+typedarray/arraybuffer-pin.js
+typedarray/arraybuffer-zero-length-alignment-check.js
+# 2026-07-12: tests that SPIN `while(!inIon())` / `while(!inJit())` (or `do{stop=inIon()}
+# while(!stop)`) in code this embed NEVER JIT-compiles -> INFINITE HANG (not a miscompile).
+# Two inherent-limitation classes: (a) the spin is in GLOBAL/top-level code (embed JITs
+# FUNCTIONS only, never the global script), (b) OSR-dependent -- a single long-running frame
+# that upstream Ion would OSR-compile mid-loop (this embed keeps OSR default-OFF). inIon()
+# correctly returns true from INSIDE a JIT'd function, so these are NOT inIon bugs. Left
+# un-excluded they burn the full per-test timeout AND have orphaned 20h zombie procs (2 cores).
+# Verified via timeout-sweep of all inIon()/inJit() tests. See memory
+# jittest-inion-hang-zombies-2026-07-12. Their assertions are fine (run clean in the PBL
+# interpreter); frozen/sealed write semantics separately verified JIT==PBL==V8.
+basic/define-frozen-dense.js
+basic/define-frozen-dense-strict.js
+basic/write-frozen-dense.js
+basic/write-frozen-dense-strict.js
+basic/invokeFunctionMagic.js
+basic/bug1292858.js
+basic/bug1295031.js
+ion/osr-with-optimized-out.js
+ion/testStringFromCodePoint.js
+ion/getprop-primitive.js
+ion/isArray.js
+ion/array-push-multiple.js
+ion/array-push-multiple-frozen.js
+ion/array-push-multiple-with-funapply.js
+ion/bug1247915.js
+ion/bug1314545.js
+ion/bug1324521.js
+ion/bug2014368.js

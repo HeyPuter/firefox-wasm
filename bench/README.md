@@ -23,8 +23,25 @@ bench/
   disas/                  codegen CHECK tests (FileCheck-style WAT assertions)
   jittest/                jsshell wrapper + exclude list for SpiderMonkey's jit-test suite
   wasm/                   in-process wasm-interpreter (GECKO_WASM_INTERP) test suite
+  webtooling/             Web Tooling Benchmark (real dev tools) — bundle + Intl shim
   main.ts                 the unified runner (orchestrator + __exec child mode)
 ```
+
+### web tooling benchmark
+`node bench/main.ts webtooling [tool]` runs the [Web Tooling Benchmark](https://github.com/v8/web-tooling-benchmark)
+— the real dev tools (acorn, babel, babylon, buble, chai, coffeescript, espree,
+esprima, jshint, lebab, postcss, prepack, prettier, source-map, terser, typescript,
+uglify-js) running their actual code. The best real-app representative for a DOM-less
+engine. `webtooling acorn` runs one tool (`var ONLY=...`); no arg runs all.
+
+- `cli.js` is the upstream self-contained JS-shell bundle (32MB, gitignored — rebuild
+  with `webtooling/build-cli.sh`). `intl-shim.js` stubs `Intl` (the embed is built
+  `--without-intl-api`) and is auto-loaded.
+- **Status:** initializes + runs under **PBL** (`--pbl`); under **JIT** it currently
+  hits a miscompile (`unreachable` trap) in a bundle-init function — a real
+  JIT-correctness bug surfaced by the real-world code (isolate with `disas`). Until
+  fixed, use `--pbl` (slow — the pure interpreter).
+- Needs the 64MB embed stack (build.sh `-sSTACK_SIZE`) — real parsers recurse deep.
 
 ### wasm interpreter tests
 `node bench/main.ts wasm [names...]` runs the in-process wasm-interpreter

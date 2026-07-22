@@ -1,0 +1,2 @@
+[Adblock Plus 2.0]
+example.com##li:nth-child(2n+1)

@@ -54,7 +54,7 @@ SETTINGS=(
   -sALLOW_MEMORY_GROWTH=1
   -sINITIAL_MEMORY=2147483648
   -sMAXIMUM_MEMORY=4294967296
-  -sSTACK_SIZE=8388608
+  -sSTACK_SIZE=67108864      # 64MB: real tool parsers (babel/typescript, web-tooling) recurse deep
   -sEXIT_RUNTIME=0
   -sALLOW_TABLE_GROWTH=1     # the JIT bridge builds export trampolines via addFunction()
   -sWASM_BIGINT=1
@@ -68,6 +68,11 @@ SETTINGS=(
   --js-library "$HERE/wasm-host-bridge.js"
   -Wl,--strip-debug
 )
+# Wasm name section DEFAULT-ON for the dev embed: named C++ frames in trap
+# stacks turn anonymous `wasm-function[97]` crashes into symbolized ones (this
+# cracked the 2026-07-10 compartment-check crash instantly). WJ_NONAMES=1
+# strips it for size-sensitive builds. (WJ_PROFNAMES kept as a no-op alias.)
+if [ -z "${WJ_NONAMES:-}" ]; then SETTINGS+=(--profiling-funcs); fi
 
 echo ">> linking embed (libjs_static.a, no libxul)"
 em++ "$OUT/embed.o" "$LIBJS" "${MOZGLUE[@]}" "${SETTINGS[@]}" \

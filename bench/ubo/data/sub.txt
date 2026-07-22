@@ -1,0 +1,3 @@
+[Adblock Plus 2.0]
+example.com##.x:not(:has(.y))
+a.com##div:has(.z)
