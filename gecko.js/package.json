@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@mercuryworkshop/wisp-js": "^0.4.1",
     "zstddec": "^0.2.0"
   },
   "devDependencies": {

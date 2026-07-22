@@ -17,6 +17,11 @@ import { ZSTDDecoder } from 'zstddec';
 // whether the wasm is compressed (RELEASE builds) and its uncompressed size.
 import geckoDataZst from '../wasm/gecko.data.zst?inline';
 import assets from '../wasm/gecko-assets.json';
+// WISP client: the engine's WasmFS socket backend (emsdk-patches/wisp_socket.h)
+// bridges to wisp-js's ClientConnection, which owns the WISP protocol (framing,
+// v1/v2 negotiation, per-stream flow control, extensions). It's injected into the
+// engine Module below (Module.WispClientConnection) and driven by lib/wisp-net.js.
+import { client as wispClient } from '@mercuryworkshop/wisp-js/client';
 
 // ---- public API -----------------------------------------------------------
 
@@ -293,9 +298,11 @@ export class Gecko {
         const hostMatchMedia = (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia;
         m.ENV['GECKO_DARK'] = hostMatchMedia && hostMatchMedia('(prefers-color-scheme: dark)').matches ? '1' : '0';
         for (const [k, v] of Object.entries(this.opts.env ?? {})) m.ENV[k] = v;
-        // The WISP transport (build/wisp-net.js, a --js-library) reads the
-        // endpoint from Module.wispUrl and lazily opens the single WebSocket on
+        // The WISP transport (lib/wisp-net.js, a --js-library) reads the endpoint
+        // from Module.wispUrl and drives the wisp-js ClientConnection injected here
+        // as Module.WispClientConnection; it lazily opens the single connection on
         // the runtime main thread when the first socket connects.
+        (m as unknown as { WispClientConnection: unknown }).WispClientConnection = wispClient.ClientConnection;
         if (this.opts.wispUrl) (m as unknown as { wispUrl: string }).wispUrl = this.opts.wispUrl;
 
         // Custom provider OBJECTS only: register them for the WasmFS ProviderBackend

@@ -39,6 +39,9 @@ importers:
 
   gecko.js:
     dependencies:
+      '@mercuryworkshop/wisp-js':
+        specifier: ^0.4.1
+        version: 0.4.1
       zstddec:
         specifier: ^0.2.0
         version: 0.2.0
