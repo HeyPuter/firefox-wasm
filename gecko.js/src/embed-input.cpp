@@ -123,14 +123,7 @@ void do_wheel(int x, int y, double dx, double dy, int modifiers) {
     fflush(stdout);
   }
   if (widget->AsyncPanZoomEnabled()) {
-    nsIWidget::ContentAndAPZEventStatus st = widget->DispatchInputEvent(&ev);
-    static int s_apzResN = 0;
-    if (s_apzResN < 5) {
-      s_apzResN++;
-      printf("APZ-DIAG do_wheel result: apzStatus=%d contentStatus=%d\n",
-             (int)st.mApzStatus, (int)st.mContentStatus);
-      fflush(stdout);
-    }
+    widget->DispatchInputEvent(&ev);
     return;
   }
 

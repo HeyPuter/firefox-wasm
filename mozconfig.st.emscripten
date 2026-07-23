@@ -33,7 +33,11 @@ ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOM
 export CFLAGS="-I$topsrcdir/modules/freetype2/include -msimd128"
 export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -msimd128"
 export LDFLAGS=""
-export RUSTFLAGS="-Ctarget-feature=+simd128"
+# --cfg gecko_st marks the single-threaded build for Rust code (WebRender runs
+# its RenderBackend/SceneBuilder/glyph work inline instead of on spawned threads
+# + a rayon pool, which can't exist without pthreads). Reliable ST discriminator
+# (the threaded build never sets it).
+export RUSTFLAGS="-Ctarget-feature=+simd128 --cfg gecko_st --check-cfg=cfg(gecko_st)"
 
 if command -v sccache >/dev/null 2>&1; then
   ac_add_options --with-ccache=$(command -v sccache)

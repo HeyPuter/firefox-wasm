@@ -1,6 +1,7 @@
 // Painting: software RenderDocument blit, GPU/WebRender present, and popup
 // compositing/overlay. Split from embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
+#include "nsRefreshDriver.h"
 // Paint the current document of the persistent browser to a fresh BGRA buffer
 // (width*height*4 bytes). Caller owns/free()s the buffer.
 // Composite any open popups (menus, context menus, the app-menu panel, <select>
@@ -122,20 +123,6 @@ uint8_t* xul_paint(int width, int height) {
   ps->RenderDocument(r, RenderDocumentFlags::DrawCaret, NS_RGB(255, 255, 255),
                      ctx.get());
 
-#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
-  {
-    // Diagnostic: is RenderDocument producing pixels? Sample center + count
-    // non-zero bytes. rootFrame/neverPainting/active tell us the paint state.
-    size_t nz = 0;
-    for (size_t i = 0; i < (size_t)height * stride; i += 997) {
-      if (buf[i]) nz++;
-    }
-    nsIFrame* rf = ps->GetRootFrame();
-    printf("[PAINT-DIAG] %dx%d rootFrame=%p nz~%zu neverPainting=%d\n", width,
-           height, (void*)rf, nz, (int)ps->IsNeverPainting());
-  }
-#endif
-
   // Composite open popups onto the same buffer (no-op when nothing is open).
   composite_visible_popups(ctx.get(), ps, width, height, appPerCss);
   return buf;  // BGRA8, width*height*4 bytes
@@ -159,6 +146,16 @@ void gpu_ensure_active(int width, int height) {
   // re-assert): never-painting, inactive (top-level-always-active forces active),
   // suppressed painting.
   ps->SetNeverPainting(false);
+  // The windowless browser's browsing context is not "active", so
+  // ComputeActiveness() returns false -> PresShell::PaintAndRequestComposite (the
+  // retained WebRender paint path) early-returns on !mIsActive and never builds or
+  // pushes the display list to WebRender. Mark the top-level browsing context
+  // active, then recompute activeness so the PresShell (and its refresh driver)
+  // become active and GPU compositing runs. (The software RenderDocument path does
+  // not go through PaintAndRequestComposite, so it never needed this.)
+  if (mozilla::dom::BrowsingContext* bc = g_docShell->GetBrowsingContext()) {
+    bc->SetExplicitActive(mozilla::dom::ExplicitActiveStatus::Active);
+  }
   ps->ActivenessMaybeChanged();
   ps->UnsuppressPainting();
   bool resized = false;
@@ -182,6 +179,16 @@ void gpu_ensure_active(int width, int height) {
   if (!kicked || resized) {
     kicked = true;
     if (nsIFrame* root = ps->GetRootFrame()) root->SchedulePaint();
+  }
+  // Under ST there is no vsync thread ticking the refresh driver, so drive it
+  // explicitly each frame: DoTick -> Tick -> PaintIfNeeded -> PaintSynchronously
+  // builds and submits the WebRender transaction that the compositor presents.
+  // (The software path renders directly via RenderDocument and never needs this.)
+  // Cheap when idle: Tick early-returns when no rendering phase is scheduled.
+  if (nsPresContext* pc = ps->GetPresContext()) {
+    if (nsRefreshDriver* rd = pc->RefreshDriver()) {
+      rd->DoTick();
+    }
   }
 }
 
