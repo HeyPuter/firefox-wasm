@@ -11,6 +11,13 @@
 // into per-file include sets.)
 #pragma once
 
+// Single-threaded embed (engine built without -pthread): no atomics, no SAB,
+// no app pthread. main() must not block; JS drives xul_tick() and loads
+// complete asynchronously (see xul_load_poll).
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#  define GECKO_ST_EMBED 1
+#endif
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>

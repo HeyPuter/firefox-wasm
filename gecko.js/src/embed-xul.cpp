@@ -70,6 +70,9 @@ static char* g_evalResult = nullptr; // op 5-8 string result -> g_cmd->result
 // thread"), leaving emscripten's runtime main thread free to service proxied
 // calls. This lets xul_render's SpinEventLoopUntil block here without deadlocking
 // the workers (WebRender/compositor/helper threads) that need the runtime thread.
+static void ProcessCmd();
+static void FinishCmd(bool ok);
+
 int main() {
   printf("embed-xul: main() on the app pthread (PROXY_TO_PTHREAD)\n");
   fflush(stdout);
@@ -127,6 +130,15 @@ int main() {
   // Gecko's own main-thread runnables (the refresh driver, network/timer events
   // posted by other threads) drain at most this often, so keep it well under a frame
   // (4ms) to avoid stutter -- commands themselves don't wait for it (notify wakes us).
+#ifdef GECKO_ST_EMBED
+  // Single-threaded: main() must not block (it runs on the browser main
+  // thread). Return to JS; index.ts drives xul_tick() (rAF + timer), which
+  // pumps the engine and serves commands. Loads complete across ticks via
+  // xul_load_poll -- nothing ever waits inside wasm.
+  printf("embed-xul: ST mode ready; JS must drive _xul_tick()\n");
+  fflush(stdout);
+  return 0;
+#else
   constexpr double kCmdPumpMs = 4.0;
   for (;;) {
     int32_t s = g_cmd->state;
@@ -139,13 +151,21 @@ int main() {
       emscripten_futex_wait((void*)&g_cmd->state, (uint32_t)s, kCmdPumpMs);
       continue;
     }
+    ProcessCmd();
+  }
+  return 0;
+#endif
+}
+
+// One command: runs the op and (except a pending ST load) builds the result.
+static void ProcessCmd() {
+  {
     {
       g_cmd->state = 2;  // processing
       if (g_cmd->result) {
         free(g_cmd->result);
         g_cmd->result = nullptr;
       }
-      uint8_t* buf = nullptr;
       bool ok = true;
       switch (g_cmd->op) {
         case 0:  // load URL
@@ -191,9 +211,25 @@ int main() {
           ok = set_clipboard_text(g_cmd->url);
           break;
       }
-      // Build the result for this op: string ops (5-8) return a UTF-8 buffer; op 9
-      // and mirror mode paint nothing; everything else paints a frame (GPU present
-      // + popup overlay, or a software BGRA blit). See each branch below.
+#ifdef GECKO_ST_EMBED
+      if (g_cmd->op == 0 && ok) {
+        // Load started but not complete; xul_tick's xul_load_poll finishes
+        // the command (state stays 2, JS keeps polling).
+        return;
+      }
+#endif
+      FinishCmd(ok);
+    }
+  }
+}
+
+// Build the result for the finished command: string ops (5-8) return a UTF-8
+// buffer; op 9 and mirror mode paint nothing; everything else paints a frame
+// (GPU present + popup overlay, or a software BGRA blit).
+static void FinishCmd(bool ok) {
+  {
+    {
+      uint8_t* buf = nullptr;
       if (g_cmd->op >= 5 && g_cmd->op <= 8) {
         // String results: op5 eval/serialize, op6 image / op7 css / op8 canvas
         // data-URL JSON.
@@ -228,5 +264,29 @@ int main() {
       }
     }
   }
-  return 0;
 }
+
+#ifdef GECKO_ST_EMBED
+extern "C" int xul_load_poll();       // embed-browser.cpp
+extern "C" bool gecko_st_pump(void);  // libxul (nsThreadManager ST scheduler)
+extern "C" unsigned gecko_st_activity;  // wedge tripwire serial (libxul)
+
+// Engine heartbeat, driven from JS (rAF + short timer). Pumps the Gecko main
+// queue + the virtual-thread scheduler, completes pending async loads, and
+// serves newly submitted commands. Never blocks.
+extern "C" EMSCRIPTEN_KEEPALIVE void xul_tick() {
+  if (!g_cmd) {
+    return;
+  }
+  ++gecko_st_activity;
+  NS_ProcessPendingEvents(nullptr, 0);
+  gecko_st_pump();
+  js::wasm::WasmJitDrainDeferred();
+  int lp = xul_load_poll();
+  if (lp == 1 || lp == 2) {
+    FinishCmd(lp == 1);
+  } else if (lp == -1 && g_cmd->state == 1) {
+    ProcessCmd();
+  }
+}
+#endif

@@ -68,11 +68,15 @@ function wispProxy(): Plugin {
   };
 }
 
-// SharedArrayBuffer (pthreads) requires cross-origin isolation.
-const coop = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
-};
+// SharedArrayBuffer (pthreads) requires cross-origin isolation. The
+// single-threaded build (GECKO_ST=1) has no SAB and deliberately serves
+// WITHOUT these headers, proving it runs non-cross-origin-isolated.
+const coop = process.env.GECKO_ST === '1'
+  ? {}
+  : {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    };
 
 // The served engine wasm -- whichever gecko.js built (raw gecko.wasm in debug, or
 // gecko.wasm.zst in release). Injected as __GECKO_WASM__ and passed to Gecko's required
@@ -89,6 +93,6 @@ export default defineConfig({
   // main.ts uses top-level await (await gecko.init()/load()); keep the build target
   // modern so `vite build` doesn't reject it (dev already uses esnext).
   build: { target: 'esnext' },
-  server: { headers: coop },
+  server: { headers: coop, allowedHosts: ["gooner"] },
   preview: { headers: coop },
 });

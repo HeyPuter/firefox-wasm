@@ -60,10 +60,25 @@ export GECKO_LTO := $(LTO)
 # once at make startup, so both passes inherit the same value.
 export MOZ_BUILD_DATE := $(shell date +%Y%m%d%H%M%S)
 
+# SINGLETHREAD=1: the no-pthread engine (no atomics, no SharedArrayBuffer, no
+# workers; runs on the browser main thread, JS drives _xul_tick). Entirely
+# independent: own mozconfig (mozconfig.st.emscripten) + own objdir
+# (obj-st-emscripten), so it never reconfigures/rebuilds the threaded tree.
+# Usage: make SINGLETHREAD=1 [build|libxul|embed-demo|run].
+SINGLETHREAD ?=
+ifneq ($(SINGLETHREAD),)
+MOZCONFIG := $(ROOT)/mozconfig.st.emscripten
+export GECKO_ST := 1
+export GECKO_OBJDIR := $(ROOT)/obj-st-emscripten
+endif
+
 # Engine build output (RELEASE uses its own objdir, matching the mozconfig + the
 # gecko.js build script). `libxul` keys off this existing to decide whether a first
 # engine build is needed.
 OBJDIR := $(ROOT)/obj-full-emscripten$(if $(RELEASE),-release)
+ifneq ($(SINGLETHREAD),)
+OBJDIR := $(ROOT)/obj-st-emscripten
+endif
 LIBXUL := $(OBJDIR)/dist/bin/libxul.so
 
 # The files we treat as "configuration": editing one of these should force a

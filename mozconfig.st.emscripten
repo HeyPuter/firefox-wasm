@@ -1,0 +1,46 @@
+# SINGLETHREADED Gecko -> emscripten (browser wasm, NO -pthread).
+# No atomics target feature, no SharedArrayBuffer, no workers: the whole engine
+# runs on one thread. Runtime thread creation is virtualized (see the
+# __EMSCRIPTEN__ && !__EMSCRIPTEN_PTHREADS__ guarded patches in firefox/):
+# XPCOM/NSPR "threads" become event queues drained from the main event loop.
+# Own objdir so it never thrashes the threaded obj-full-emscripten build.
+mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-st-emscripten
+
+ac_add_options --enable-application=browser
+ac_add_options --target=wasm32-unknown-emscripten
+
+ac_add_options --disable-jit
+ac_add_options --enable-portable-baseline-interp
+ac_add_options --enable-portable-baseline-interp-force
+ac_add_options --disable-shared-memory
+
+ac_add_options --disable-tests
+ac_add_options --disable-debug
+ac_add_options --enable-optimize=-O2
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-backgroundtasks
+ac_add_options --disable-webrtc
+ac_add_options --without-wasm-sandboxed-libraries
+ac_add_options --disable-ctypes
+
+ac_add_options --with-libclang-path=${LIBCLANG_PATH:-${MOZBUILD_STATE_PATH:-$HOME/.mozbuild}/clang/lib}
+
+# Same in-tree FreeType + wasm SIMD as the threaded build, minus -pthread.
+# (No -pthread => emcc does NOT define __EMSCRIPTEN_PTHREADS__, does not enable
+# the atomics/bulk-memory-shared target features, and the linked module uses a
+# plain (non-shared) memory: no SharedArrayBuffer, no wasm atomics.)
+export CFLAGS="-I$topsrcdir/modules/freetype2/include -msimd128"
+export CXXFLAGS="-I$topsrcdir/modules/freetype2/include -msimd128"
+export LDFLAGS=""
+export RUSTFLAGS="-Ctarget-feature=+simd128"
+
+if command -v sccache >/dev/null 2>&1; then
+  ac_add_options --with-ccache=$(command -v sccache)
+  mk_add_options "export SCCACHE_CACHE_SIZE=40G"
+fi
+
+CC=emcc
+CXX=em++
+HOST_CC=clang
+HOST_CXX=clang++

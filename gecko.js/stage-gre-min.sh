@@ -39,6 +39,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js (package root)
 ROOT="$(cd "$HERE/.." && pwd)"                 # repo root
 OBJ="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
+[ "${GECKO_ST:-}" = "1" ] && OBJ="$ROOT/obj-st-emscripten"
 SRC="$OBJ/dist/bin"
 DST="$HERE/build/gre-stage"                    # generated artifact, lives under build/
 

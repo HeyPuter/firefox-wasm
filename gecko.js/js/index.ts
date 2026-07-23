@@ -367,6 +367,23 @@ export class Gecko {
     await ready;
     this.cmd = this.mod._xul_cmd_ptr();
 
+    // Single-threaded engine (no pthreads/SAB): main() returned to JS and the
+    // engine only advances inside _xul_tick(). Drive it at ~4ms (command pickup,
+    // Gecko event loop, virtual-thread pump, async load completion).
+    const st = this.mod as unknown as { _xul_tick?: () => void };
+    if (typeof st._xul_tick === 'function') {
+      const tick = () => {
+        try {
+          st._xul_tick!();
+        } catch (e) {
+          printErr('gecko.js: xul_tick threw: ' + e + '\n' +
+                   String((e as Error)?.stack || '').split('\n').slice(0, 24).join('\n'));
+        }
+      };
+      const timer = setInterval(tick, 4);
+      this.detach.push(() => clearInterval(timer));
+    }
+
     if (this.opts.forwardInput !== false) this.attachInput();
     this.startPaintLoop();
   }

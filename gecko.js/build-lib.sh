@@ -13,6 +13,10 @@ BUILD="$HERE/build"                            # generated artifacts (.o, staged
 mkdir -p "$BUILD"
 OBJ="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
+# GECKO_ST=1: the single-threaded engine (no -pthread, no SharedArrayBuffer,
+# no atomics, no workers). Runs entirely on the browser main thread; JS drives
+# _xul_tick(). See mozconfig.st.emscripten.
+[ "${GECKO_ST:-}" = "1" ] && OBJ="$ROOT/obj-st-emscripten"
 INC="$OBJ/dist/include"
 DISTBIN="$OBJ/dist/bin"
 OUT="$PKG/wasm/gecko.js"
@@ -51,8 +55,11 @@ CXXFLAGS=(
   -std=gnu++20 -fno-exceptions -fno-rtti -fno-sized-deallocation -fno-aligned-new
   -DMOZILLA_INTERNAL_API -DMOZ_HAS_MOZGLUE -DNDEBUG=1
   -isystem "$INC" -isystem "$INC/nspr" -isystem "$ROOT/firefox/nsprpub/pr/include"
-  -pthread "${EMBED_OPT[@]}"
+  "${EMBED_OPT[@]}"
 )
+# -pthread defines __EMSCRIPTEN_PTHREADS__, which is how the embedder sources
+# select threaded vs single-threaded (GECKO_ST_EMBED) code paths.
+[ "${GECKO_ST:-}" = "1" ] || CXXFLAGS+=( -pthread )
 echo ">> compiling embedder (embed-*.cpp)"
 EMBED_OBJS=()
 for src in embed-xul embed-init embed-browser embed-paint embed-input embed-mirror; do
@@ -66,6 +73,10 @@ for d in mfbt mozglue/misc mozglue/baseprofiler mozglue/build memory/build memor
   for f in "$OBJ/$d"/*.o; do [ -e "$f" ] && LOOSE+=("$f"); done
 done
 EXTRA=( "$BUILD/libnss3.stripped.so" "$BUILD/libgkcodecs.stripped.so" )
+
+EXPORTS_LIST=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots,_InterpTraceRoots,_b_help,_hostimg_renderer_tid,_gecko_coarse_now_ptr
+# Single-threaded: JS drives the engine heartbeat + async load completion.
+[ "${GECKO_ST:-}" = "1" ] && EXPORTS_LIST="$EXPORTS_LIST,_xul_tick,_xul_load_poll,_gecko_st_pump"
 
 EMSETTINGS=(
   "$LINK_OPT" --profiling-funcs
@@ -85,9 +96,8 @@ EMSETTINGS=(
   -sMALLOC=mimalloc
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=4294967296
   -sSTACK_SIZE=67108864 -sEXIT_RUNTIME=0
-  -pthread -sPTHREAD_POOL_SIZE=20 -sPTHREAD_POOL_SIZE_STRICT=0
   -sMODULARIZE=1 -sEXPORT_NAME=createGecko
-  -sEXPORTED_FUNCTIONS=_main,_xul_init,_free,_malloc,_WasmXPTCStubDispatch,_xul_cmd_ptr,_wisp_wakeword,_wisp_deliver,_wisp_set_connected,_wisp_set_eof,_wisp_set_error,_wasmfs_create_provider_backend,_provider_record_entry,_wasmhost_invoke_import,_wjhelp,_wasmjit_invoke,_WJTraceRoots,_InterpTraceRoots,_b_help,_hostimg_renderer_tid,_gecko_coarse_now_ptr
+  "-sEXPORTED_FUNCTIONS=$EXPORTS_LIST"
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,addFunction,removeFunction,ENV,addRunDependency,removeRunDependency,HEAPU8,HEAP32,HEAPF32,UTF8ToString
   # WasmFS (the new FS impl). Its socket syscalls are reinstated by the WISP
   # backend patched into libwasmfs (emsdk-patches/wisp_socket.h); wisp-net.js is
@@ -122,13 +132,23 @@ EMSETTINGS=(
   # browser's WebCodecs ImageDecoder (in-tree image/decoders/nsHostProxyImageDecoder,
   # opt-in GECKO_IMG_PASSTHROUGH). Single-shot shared-heap control block + futex.
   --js-library "$LIB/hostimg-bridge.js"
-  -sPROXY_TO_PTHREAD=1
   -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=1 -sFULL_ES3
-  -sOFFSCREEN_FRAMEBUFFER=1 -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1 -sGL_ENABLE_GET_PROC_ADDRESS=1
-  -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=#gldummy
-  -sENVIRONMENT=web,worker
+  -sGL_SUPPORT_EXPLICIT_SWAP_CONTROL=1 -sGL_ENABLE_GET_PROC_ADDRESS=1
   --preload-file "$BUILD/gre-stage@/gre-baked"
 )
+if [ "${GECKO_ST:-}" = "1" ]; then
+  # Single-threaded: no workers, no shared memory, no proxying. Everything runs
+  # on the browser main thread; JS drives _xul_tick().
+  EMSETTINGS+=( -sENVIRONMENT=web )
+else
+  EMSETTINGS+=(
+    -pthread -sPTHREAD_POOL_SIZE=20 -sPTHREAD_POOL_SIZE_STRICT=0
+    -sPROXY_TO_PTHREAD=1
+    -sOFFSCREEN_FRAMEBUFFER=1
+    -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=#gldummy
+    -sENVIRONMENT=web,worker
+  )
+fi
 if [ "${DEBUG:-0}" = "1" ]; then
   EMSETTINGS+=( -g -gseparate-dwarf="$PKG/wasm/gecko.debug.wasm" )
 else
@@ -170,8 +190,14 @@ fi
 # fix (hoist `out` varyings declared after main() so host WebGL -- e.g. Firefox,
 # which runs ANGLE's init-output-variables pass -- accepts the compositor
 # shaders). Idempotent; errors if the emscripten call site moved.
+if [ "${GECKO_ST:-}" = "1" ]; then
+  # ST glue has no pthread proxy/worker code for the patch's regexes to match,
+  # and v1 is software-rendered (no WebRender-on-host-GL shader hoist needed).
+  echo ">> skipping patch-gecko-shaderfix.mjs (GECKO_ST)"
+else
 echo ">> patching gecko.js (WebRender shader hoist for host WebGL)"
 node "$HERE/patch-gecko-shaderfix.mjs" "$OUT" || { echo "!! gecko.js shader patch failed"; exit 1; }
+fi
 
 # Compress shipped assets for the loader (src/index.ts reads gecko-assets.json and
 # decodes the .zst with zstddec via emscripten getPreloadedPackage/instantiateWasm).

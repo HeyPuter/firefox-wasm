@@ -165,11 +165,15 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
 
   // Content-only embedding: a windowless browser is enough to host a page and
   // render it to canvas.
+  printf("EnsureBrowser: CreateWindowlessBrowser...\n");
+  fflush(stdout);
   nsresult rv = appShell->CreateWindowlessBrowser(false, 0, getter_AddRefs(g_wb));
   if (NS_FAILED(rv) || !g_wb) {
     printf("EnsureBrowser: CreateWindowlessBrowser failed 0x%08x\n", (unsigned)rv);
     return nullptr;
   }
+  printf("EnsureBrowser: CreateWindowlessBrowser ok, GetDocShell...\n");
+  fflush(stdout);
   g_wb->GetDocShell(getter_AddRefs(g_docShell));
   // Give the docshell a real size + make it visible, so its PresShell has a
   // non-empty viewport and actually reflows/paints.
@@ -180,6 +184,8 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
   }
   g_lastW = width;
   g_lastH = height;
+  printf("EnsureBrowser: sized+visible, RefreshScreen...\n");
+  fflush(stdout);
   RefreshScreen(width, height);
   nsCOMPtr<nsIWebProgress> webProgress = do_QueryInterface(g_docShell);
   if (webProgress) {
@@ -367,6 +373,46 @@ static bool xul_chrome_load_content(const char* url, int width, int height) {
   return true;
 }
 
+static bool XulLoadTail(nsIDocShell* ds);
+
+#ifdef GECKO_ST_EMBED
+// Pending single-threaded load: xul_load stashes here instead of spinning;
+// xul_load_poll (from xul_tick) completes it.
+static struct {
+  bool active = false;
+  nsCOMPtr<nsIDocShell> ds;
+  RefPtr<mozilla::dom::Document> oldDoc;
+  uint32_t polls = 0;
+} g_stLoad;
+
+// 0 = still loading, 1 = completed ok, 2 = completed (tail failed), -1 = no
+// load in flight.
+extern "C" int xul_load_poll() {
+  using mozilla::PresShell;
+  using mozilla::dom::Document;
+  if (!g_stLoad.active) {
+    return -1;
+  }
+  PresShell* p = g_stLoad.ds->GetPresShell();
+  Document* d = p ? p->GetDocument() : nullptr;
+  int st = d ? (int)d->GetReadyStateEnum() : -1;
+  bool isNew = d && d != g_stLoad.oldDoc;
+  // ~30k ticks at ~4ms is the 120s JS-side command timeout; give up like the
+  // threaded spin cap does and run the tail anyway.
+  if (!((isNew && st >= (int)Document::READYSTATE_INTERACTIVE) ||
+        (++g_stLoad.polls > 30000))) {
+    return 0;
+  }
+  nsCOMPtr<nsIDocShell> ds = g_stLoad.ds;
+  g_stLoad.active = false;
+  g_stLoad.ds = nullptr;
+  g_stLoad.oldDoc = nullptr;
+  printf("xul_load: ST load ready after %u polls\n", g_stLoad.polls);
+  fflush(stdout);
+  return XulLoadTail(ds) ? 1 : 2;
+}
+#endif
+
 bool xul_load(const char* url, int width, int height) {
   using namespace mozilla;
   using mozilla::dom::Document;
@@ -417,6 +463,18 @@ bool xul_load(const char* url, int width, int height) {
   // is all both render paths need: the mirror loop keeps re-serializing and the paint
   // loop (op=4, ~25fps) keeps repainting as the page hydrates/mutates afterward -- i.e.
   // progressive load, like a real browser, instead of a multi-minute stall.
+#ifdef GECKO_ST_EMBED
+  // Single-threaded: cannot spin here -- network delivery needs the JS event
+  // loop, which is blocked while we run. Stash the load; xul_load_poll()
+  // (driven by xul_tick) runs XulLoadTail once the document is interactive.
+  g_stLoad.active = true;
+  g_stLoad.ds = ds;
+  g_stLoad.oldDoc = oldDoc;
+  g_stLoad.polls = 0;
+  printf("xul_load: ST async load pending\n");
+  fflush(stdout);
+  return true;
+#else
   uint32_t spins = 0;
   SpinEventLoopUntil("xul_load"_ns, [&]() -> bool {
     PresShell* p = ds->GetPresShell();
@@ -428,6 +486,16 @@ bool xul_load(const char* url, int width, int height) {
   });
   printf("xul_load: spun %u, ready\n", spins);
   fflush(stdout);
+
+  return XulLoadTail(ds);
+#endif
+}
+
+// Post-load tail (focus/actors/mirror), shared by the blocking (threaded) and
+// polled (single-threaded) load paths.
+static bool XulLoadTail(nsIDocShell* ds) {
+  using namespace mozilla;
+  using mozilla::dom::Document;
 
   // Make our content window the focused/active window so synthesized keyboard
   // events route to the focused element (otherwise nsFocusManager has no active

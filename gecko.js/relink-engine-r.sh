@@ -22,6 +22,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"          # gecko.js (package root)
 ROOT="$(cd "$HERE/.." && pwd)"                 # repo root
 OBJ="$ROOT/obj-full-emscripten"
 [ "${GECKO_RELEASE:-}" = "1" ] && OBJ="$ROOT/obj-full-emscripten-release"
+# GECKO_OBJDIR overrides both (e.g. the singlethreaded obj-st-emscripten build).
+[ -n "${GECKO_OBJDIR:-}" ] && OBJ="$GECKO_OBJDIR"
 DISTBIN="$OBJ/dist/bin"
 
 relink() {  # $1=make-subdir  $2=libname  $3=drop-dependent-so-inputs(0/1)
