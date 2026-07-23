@@ -87,6 +87,13 @@ uint8_t* xul_paint(int width, int height) {
     return nullptr;
   }
   ps->UnsuppressPainting();
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+  // Single-threaded software paint of the chrome AppWindow: clear the gates
+  // that keep a top-level window from painting when it isn't the OS-active
+  // window (RenderDocument otherwise produces an empty frame). Idempotent.
+  ps->SetNeverPainting(false);
+  ps->ActivenessMaybeChanged();
+#endif
   if (Document* doc2 = ps->GetDocument()) {
     doc2->FlushPendingNotifications(mozilla::FlushType::Layout);
   }
@@ -114,6 +121,20 @@ uint8_t* xul_paint(int width, int height) {
   // caret in its "off" phase.)
   ps->RenderDocument(r, RenderDocumentFlags::DrawCaret, NS_RGB(255, 255, 255),
                      ctx.get());
+
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+  {
+    // Diagnostic: is RenderDocument producing pixels? Sample center + count
+    // non-zero bytes. rootFrame/neverPainting/active tell us the paint state.
+    size_t nz = 0;
+    for (size_t i = 0; i < (size_t)height * stride; i += 997) {
+      if (buf[i]) nz++;
+    }
+    nsIFrame* rf = ps->GetRootFrame();
+    printf("[PAINT-DIAG] %dx%d rootFrame=%p nz~%zu neverPainting=%d\n", width,
+           height, (void*)rf, nz, (int)ps->IsNeverPainting());
+  }
+#endif
 
   // Composite open popups onto the same buffer (no-op when nothing is open).
   composite_visible_popups(ctx.get(), ps, width, height, appPerCss);

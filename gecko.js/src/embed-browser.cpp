@@ -165,15 +165,11 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
 
   // Content-only embedding: a windowless browser is enough to host a page and
   // render it to canvas.
-  printf("EnsureBrowser: CreateWindowlessBrowser...\n");
-  fflush(stdout);
   nsresult rv = appShell->CreateWindowlessBrowser(false, 0, getter_AddRefs(g_wb));
   if (NS_FAILED(rv) || !g_wb) {
     printf("EnsureBrowser: CreateWindowlessBrowser failed 0x%08x\n", (unsigned)rv);
     return nullptr;
   }
-  printf("EnsureBrowser: CreateWindowlessBrowser ok, GetDocShell...\n");
-  fflush(stdout);
   g_wb->GetDocShell(getter_AddRefs(g_docShell));
   // Give the docshell a real size + make it visible, so its PresShell has a
   // non-empty viewport and actually reflows/paints.
@@ -184,8 +180,6 @@ static nsIDocShell* EnsureBrowser(int width, int height) {
   }
   g_lastW = width;
   g_lastH = height;
-  printf("EnsureBrowser: sized+visible, RefreshScreen...\n");
-  fflush(stdout);
   RefreshScreen(width, height);
   nsCOMPtr<nsIWebProgress> webProgress = do_QueryInterface(g_docShell);
   if (webProgress) {

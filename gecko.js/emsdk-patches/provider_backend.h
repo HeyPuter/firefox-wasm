@@ -70,6 +70,25 @@ void provider_unlink(em_proxying_ctx* ctx, int mountId, const char* path,
                      int* outErr);
 void provider_rename(em_proxying_ctx* ctx, int mountId, const char* from,
                      const char* to, int* outErr);
+
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+// Single-threaded wasm: no worker/R split and no ProxyingQueue -- a sync-proxy
+// to the (sole) main thread would self-deadlock. These synchronous variants
+// call the provider's *Sync methods directly (the consumer must supply them;
+// they must not touch async APIs). Paths are mount-relative NUL-terminated.
+void provider_stat_sync(int mountId, const char* path, int* outExists,
+                        int* outIsDir, int64_t* outSize);
+void provider_read_sync(int mountId, const char* path, uint8_t** outPtr,
+                        int* outLen, int* outErr);
+void provider_write_sync(int mountId, const char* path, const uint8_t* data,
+                         int len, int* outErr);
+void provider_readdir_sync(int mountId, const char* path, void* entriesVec,
+                           int* outErr);
+void provider_mkdir_sync(int mountId, const char* path, int* outErr);
+void provider_unlink_sync(int mountId, const char* path, int* outErr);
+void provider_rename_sync(int mountId, const char* from, const char* to,
+                          int* outErr);
+#endif
 }
 
 // Proxies a ctx-taking thunk to the runtime main thread and blocks until the
@@ -108,9 +127,13 @@ private:
     if (loaded) return;
     uint8_t* p = nullptr;
     int n = 0, err = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_read_sync(mountId, path.c_str(), &p, &n, &err);
+#else
     proxy([&](auto ctx) {
       provider_read(ctx.ctx, mountId, path.c_str(), &p, &n, &err);
     });
+#endif
     if (p && n > 0) {
       buffer.assign(p, p + n);
     }
@@ -144,10 +167,15 @@ private:
   int flush() override {
     if (!dirty) return 0;
     int err = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_write_sync(mountId, path.c_str(), buffer.data(),
+                        (int)buffer.size(), &err);
+#else
     proxy([&](auto ctx) {
       provider_write(ctx.ctx, mountId, path.c_str(), buffer.data(),
                      (int)buffer.size(), &err);
     });
+#endif
     if (err) return -EIO;
     dirty = false;
     return 0;
@@ -157,9 +185,13 @@ private:
     if (loaded) return (off_t)buffer.size();
     int exists = 0, isDir = 0;
     int64_t size = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_stat_sync(mountId, path.c_str(), &exists, &isDir, &size);
+#else
     proxy([&](auto ctx) {
       provider_stat(ctx.ctx, mountId, path.c_str(), &exists, &isDir, &size);
     });
+#endif
     return exists ? (off_t)size : 0;
   }
 
@@ -191,9 +223,13 @@ private:
     auto cp = childPath(name);
     int exists = 0, isDir = 0;
     int64_t size = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_stat_sync(mountId, cp.c_str(), &exists, &isDir, &size);
+#else
     proxy([&](auto ctx) {
       provider_stat(ctx.ctx, mountId, cp.c_str(), &exists, &isDir, &size);
     });
+#endif
     if (!exists) return nullptr;
     if (isDir) {
       return std::make_shared<ProviderDirectory>(0777, getBackend(), mountId,
@@ -215,9 +251,13 @@ private:
                                              mode_t mode) override {
     auto cp = childPath(name);
     int err = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_mkdir_sync(mountId, cp.c_str(), &err);
+#else
     proxy([&](auto ctx) {
       provider_mkdir(ctx.ctx, mountId, cp.c_str(), &err);
     });
+#endif
     if (err) return nullptr;
     return std::make_shared<ProviderDirectory>(mode, getBackend(), mountId, cp,
                                                proxy);
@@ -245,18 +285,26 @@ private:
     }
     auto to = childPath(name);
     int err = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_rename_sync(mountId, from.c_str(), to.c_str(), &err);
+#else
     proxy([&](auto ctx) {
       provider_rename(ctx.ctx, mountId, from.c_str(), to.c_str(), &err);
     });
+#endif
     return err ? -EIO : 0;
   }
 
   int removeChild(const std::string& name) override {
     auto cp = childPath(name);
     int err = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_unlink_sync(mountId, cp.c_str(), &err);
+#else
     proxy([&](auto ctx) {
       provider_unlink(ctx.ctx, mountId, cp.c_str(), &err);
     });
+#endif
     return err ? -EIO : 0;
   }
 
@@ -269,9 +317,13 @@ private:
   Directory::MaybeEntries getEntries() override {
     std::vector<Directory::Entry> entries;
     int err = 0;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    provider_readdir_sync(mountId, path.c_str(), &entries, &err);
+#else
     proxy([&](auto ctx) {
       provider_readdir(ctx.ctx, mountId, path.c_str(), &entries, &err);
     });
+#endif
     if (err) return {-EIO};
     return {entries};
   }

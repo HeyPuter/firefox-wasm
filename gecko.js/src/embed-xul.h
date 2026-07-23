@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <cerrno>
 #include <cmath>
 #include <string>
 #include <unordered_map>

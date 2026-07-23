@@ -234,6 +234,26 @@ function makeProvider(index: TarIndex): FsProvider {
       if (!file) throw new Error(`chrome-fs: no such file ${path}`);
       return file;
     },
+    // Synchronous accessors for the single-threaded engine build: the tar is
+    // fully in memory, so these resolve without async. (The no-pthread
+    // ProviderBackend calls these instead of the Promise-returning versions.)
+    statSync(path: string): FsStat | null {
+      const p = normalizePath(path);
+      const file = index.files.get(p);
+      if (file) return { size: file.byteLength, isDir: false };
+      if (index.dirs.has(p)) return { size: 0, isDir: true };
+      return null;
+    },
+    readdirSync(path: string): string[] {
+      const children = index.dirs.get(normalizePath(path));
+      if (!children) throw new Error(`chrome-fs: no such directory ${path}`);
+      return [...children];
+    },
+    readFileSync(path: string): Uint8Array {
+      const file = index.files.get(normalizePath(path));
+      if (!file) throw new Error(`chrome-fs: no such file ${path}`);
+      return file;
+    },
   };
 }
 

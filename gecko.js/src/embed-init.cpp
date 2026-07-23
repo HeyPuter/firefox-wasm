@@ -135,13 +135,21 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // runs synchronously and cannot yield, so this deadlocks. Skipping it falls the
   // profile back to the default in-memory WasmFS backend (mkdir creates /opfs/*).
 #ifdef GECKO_ST_EMBED
-  // Single-threaded: the OPFS backend needs a dedicated worker (pthread) and
-  // the ProviderBackend sync-waits on async JS -- both impossible with no
-  // threads. Fall back to the in-memory WasmFS default + baked /gre-baked.
-  if (false) {
+  // Single-threaded: the native OPFS backend needs a dedicated worker (pthread),
+  // impossible with no threads. Create /opfs as a plain in-memory WasmFS dir so
+  // profile paths (/opfs/<path>) still resolve -- the profile is non-persistent
+  // this build (lost on reload), which is fine for rendering/networking.
+  if (getenv("GECKO_OPFS_MOUNT")) {
+    int orv = mkdir("/opfs", 0777);  // default in-memory backend
+    printf("xul_init[ST]: /opfs in-memory dir (no OPFS worker) rv=%d errno=%d\n",
+           orv, orv ? errno : 0);
+    fflush(stdout);
+  } else {
+    printf("xul_init: OPFS mount skipped (no mount)\n");
+    fflush(stdout);
+  }
 #else
   if (getenv("GECKO_OPFS_MOUNT") && !getenv("GECKO_SKIP_OPFS")) {
-#endif
     backend_t ob = wasmfs_create_opfs_backend();
     int orv = wasmfs_create_directory("/opfs", 0777, ob);
     printf("xul_init: mounted /opfs (native OPFS backend) rv=%d\n", orv);
@@ -150,6 +158,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     printf("xul_init: OPFS mount skipped (GECKO_SKIP_OPFS or no mount)\n");
     fflush(stdout);
   }
+#endif
 
   // Mount the GRE provider backend at greDir BEFORE NS_InitXPCOM reads any GRE
   // resource. When an `fs` provider OBJECT is registered (index.ts sets
@@ -158,11 +167,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // provider (Module.geckoProviders[0]). (String paths use /opfs above instead;
   // gecko.data stays baked at /gre-baked for the no-`fs` case.)
   // (emsdk-patches/provider_backend.h + build/provider-fs.js.)
-#ifdef GECKO_ST_EMBED
-  if (false) {
-#else
+  // Single-threaded build uses the SYNCHRONOUS ProviderBackend path (the tar is
+  // in memory; provider *Sync hooks run inline -- see provider_backend.h).
   if (getenv("GECKO_GRE_PROVIDER")) {
-#endif
     backend_t gb = wasmfs_create_provider_backend(/*mountId=*/0);
     int grv = wasmfs_create_directory(greDir, 0555, gb);
     printf("xul_init: mounted %s (GRE provider backend) rv=%d\n", greDir, grv);

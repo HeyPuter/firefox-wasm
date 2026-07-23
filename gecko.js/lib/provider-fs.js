@@ -94,4 +94,84 @@ mergeInto(LibraryManager.library, {
     HEAP32[outErr >> 2] = err;
     _emscripten_proxy_finish(ctx);
   },
+
+  // --- Synchronous hooks for the single-threaded (no-pthread) build ----------
+  // No worker/R split and no ProxyingQueue: the C++ ProviderBackend calls these
+  // directly on the sole thread. They use the provider's *Sync methods, which
+  // must resolve without touching async APIs (e.g. an in-memory tar). No
+  // proxy_finish (there is no proxying ctx).
+  provider_stat_sync__deps: ['$UTF8ToString', '$geckoProv'],
+  provider_stat_sync: function (mountId, pathPtr, outExists, outIsDir, outSize) {
+    let exists = 0, isDir = 0, size = 0;
+    try {
+      const st = geckoProv(mountId).statSync(UTF8ToString(pathPtr));
+      if (st) { exists = 1; isDir = st.isDir ? 1 : 0; size = st.size || 0; }
+    } catch (e) {}
+    HEAP32[outExists >> 2] = exists;
+    HEAP32[outIsDir >> 2] = isDir;
+    HEAPU32[outSize >> 2] = size >>> 0;
+    HEAPU32[(outSize >> 2) + 1] = Math.floor(size / 4294967296);
+  },
+
+  provider_read_sync__deps: ['$UTF8ToString', '$geckoProv', 'malloc'],
+  provider_read_sync: function (mountId, pathPtr, outPtr, outLen, outErr) {
+    let p = 0, n = 0, err = 0;
+    try {
+      const data = geckoProv(mountId).readFileSync(UTF8ToString(pathPtr));
+      n = data.length;
+      if (n > 0) { p = _malloc(n); HEAPU8.set(data, p); }
+    } catch (e) { err = 1; }
+    HEAPU32[outPtr >> 2] = p;
+    HEAP32[outLen >> 2] = n;
+    HEAP32[outErr >> 2] = err;
+  },
+
+  provider_write_sync__deps: ['$UTF8ToString', '$geckoProv'],
+  provider_write_sync: function (mountId, pathPtr, dataPtr, len, outErr) {
+    let err = 0;
+    try {
+      geckoProv(mountId).writeFileSync(UTF8ToString(pathPtr),
+                                       HEAPU8.slice(dataPtr, dataPtr + len));
+    } catch (e) { err = 1; }
+    HEAP32[outErr >> 2] = err;
+  },
+
+  provider_readdir_sync__deps: ['$UTF8ToString', '$stringToUTF8OnStack', '$stackSave', '$stackRestore', '$geckoProv'],
+  provider_readdir_sync: function (mountId, pathPtr, entriesVec, outErr) {
+    let err = 0;
+    try {
+      const prov = geckoProv(mountId);
+      const dir = UTF8ToString(pathPtr);
+      const names = prov.readdirSync(dir);
+      for (const name of names) {
+        let isDir = 0;
+        try { const st = prov.statSync(dir ? dir + '/' + name : name); if (st && st.isDir) isDir = 1; } catch (e) {}
+        const sp = stackSave();
+        _provider_record_entry(entriesVec, stringToUTF8OnStack(name), isDir);
+        stackRestore(sp);
+      }
+    } catch (e) { err = 1; }
+    HEAP32[outErr >> 2] = err;
+  },
+
+  provider_mkdir_sync__deps: ['$UTF8ToString', '$geckoProv'],
+  provider_mkdir_sync: function (mountId, pathPtr, outErr) {
+    let err = 0;
+    try { geckoProv(mountId).mkdirSync(UTF8ToString(pathPtr)); } catch (e) { err = 1; }
+    HEAP32[outErr >> 2] = err;
+  },
+
+  provider_unlink_sync__deps: ['$UTF8ToString', '$geckoProv'],
+  provider_unlink_sync: function (mountId, pathPtr, outErr) {
+    let err = 0;
+    try { geckoProv(mountId).unlinkSync(UTF8ToString(pathPtr)); } catch (e) { err = 1; }
+    HEAP32[outErr >> 2] = err;
+  },
+
+  provider_rename_sync__deps: ['$UTF8ToString', '$geckoProv'],
+  provider_rename_sync: function (mountId, fromPtr, toPtr, outErr) {
+    let err = 0;
+    try { geckoProv(mountId).renameSync(UTF8ToString(fromPtr), UTF8ToString(toPtr)); } catch (e) { err = 1; }
+    HEAP32[outErr >> 2] = err;
+  },
 });

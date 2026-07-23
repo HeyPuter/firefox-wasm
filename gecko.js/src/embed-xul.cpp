@@ -279,6 +279,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void xul_tick() {
     return;
   }
   ++gecko_st_activity;
+  static uint64_t sTickN = 0;
+  static int sLastState = -99;
+  if ((++sTickN % 250) == 0) {
+    printf("[TICK-DIAG] tick=%llu state=%d op=%d\n", (unsigned long long)sTickN,
+           (int)g_cmd->state, (int)g_cmd->op);
+  }
+  if (g_cmd->state != sLastState) {
+    printf("[TICK-DIAG] state %d->%d op=%d\n", sLastState, (int)g_cmd->state,
+           (int)g_cmd->op);
+    sLastState = g_cmd->state;
+  }
   NS_ProcessPendingEvents(nullptr, 0);
   gecko_st_pump();
   js::wasm::WasmJitDrainDeferred();
@@ -286,6 +297,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void xul_tick() {
   if (lp == 1 || lp == 2) {
     FinishCmd(lp == 1);
   } else if (lp == -1 && g_cmd->state == 1) {
+    printf("[TICK-DIAG] ProcessCmd op=%d\n", (int)g_cmd->op);
     ProcessCmd();
   }
 }

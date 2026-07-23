@@ -96,10 +96,15 @@ function wispProxy(): Plugin {
   };
 }
 
-const coop = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
-};
+// SharedArrayBuffer (pthreads) requires cross-origin isolation. The
+// single-threaded build (GECKO_ST=1) has no SAB and serves WITHOUT these
+// headers, proving it runs non-cross-origin-isolated.
+const coop = process.env.GECKO_ST === '1'
+  ? {}
+  : {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    };
 
 // The served engine wasm -- whichever gecko.js built (raw gecko.wasm in debug, or
 // gecko.wasm.zst in release). Injected as __GECKO_WASM__ and passed to Gecko's required
@@ -114,7 +119,10 @@ export default defineConfig({
   // the page URL in main.ts/chrome-fs.ts to match).
   base: './',
   plugins: [serveEngine(), packageGreExtra(), wispProxy()],
-  define: { __GECKO_WASM__: JSON.stringify(GECKO_WASM) },
+  define: {
+    __GECKO_WASM__: JSON.stringify(GECKO_WASM),
+    __GECKO_ST__: JSON.stringify(process.env.GECKO_ST === '1'),
+  },
   // gecko.js is a workspace package under active rebuild; don't pre-bundle/cache
   // it, so a plain reload picks up a fresh dist/gecko.js (no `vite --force`).
   optimizeDeps: { exclude: ['gecko.js'] },

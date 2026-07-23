@@ -8,6 +8,7 @@ import {
 
 // Injected by vite.config (define): the served engine wasm { url, compressed }.
 declare const __GECKO_WASM__: { url: string; compressed: boolean };
+declare const __GECKO_ST__: boolean;
 declare global {
   interface ImportMeta {
     env: {
@@ -155,7 +156,10 @@ interface Opts {
 }
 const saved: Partial<Opts> = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
 const opts: Opts = {
-  gpu: saved.gpu ?? true, // GPU acceleration on by default
+  // Single-threaded build: GPU/WebRender present needs a compositor/Renderer
+  // thread + JSPI suspension, neither available under ST -- force the software
+  // RenderDocument+blit path (same as the content embed).
+  gpu: __GECKO_ST__ ? false : (saved.gpu ?? true),
   jit: saved.jit ?? false, // wasm JIT off by default (GECKO_NOWASMJIT set)
   wisp: puterBranding ? defaultWisp : (saved.wisp ?? defaultWisp),
 };
@@ -220,9 +224,13 @@ const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
 // into the glue at link time) -- without it the wasm won't run. Feature-detect
 // and keep Launch greyed out when it's missing; Firefox has JSPI behind an
 // about:config flag, so give Firefox users the recipe.
-const hasJspi =
-  typeof (WebAssembly as { Suspending?: unknown }).Suspending === "function" &&
-  typeof (WebAssembly as { promising?: unknown }).promising === "function";
+// The single-threaded engine build (GECKO_ST=1) uses NO JSPI at all -- it runs
+// entirely on the main thread with a JS-driven tick, so the JSPI requirement
+// (which only applied to the threaded GPU-present path) does not apply.
+const isSingleThreaded = __GECKO_ST__;
+const hasJspi = isSingleThreaded ||
+  (typeof (WebAssembly as { Suspending?: unknown }).Suspending === "function" &&
+   typeof (WebAssembly as { promising?: unknown }).promising === "function");
 if (!hasJspi) {
   const note = document.getElementById("jspi-note") as HTMLElement;
   note.textContent =

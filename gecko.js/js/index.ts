@@ -45,6 +45,13 @@ export interface FsProvider {
   stat(path: string): Promise<FsStat | null>;
   readdir(path: string): Promise<string[]>;
   readFile(path: string): Promise<Uint8Array>;
+  // Optional synchronous accessors. REQUIRED when running against the
+  // single-threaded engine build (no pthreads): with no worker to run the
+  // async provider on, the ProviderBackend calls these directly on the sole
+  // thread. Back them with already-in-memory storage (they must not await).
+  statSync?(path: string): FsStat | null;
+  readdirSync?(path: string): string[];
+  readFileSync?(path: string): Uint8Array;
 }
 
 /**
@@ -376,8 +383,7 @@ export class Gecko {
         try {
           st._xul_tick!();
         } catch (e) {
-          printErr('gecko.js: xul_tick threw: ' + e + '\n' +
-                   String((e as Error)?.stack || '').split('\n').slice(0, 24).join('\n'));
+          printErr('gecko.js: xul_tick threw: ' + e);
         }
       };
       const timer = setInterval(tick, 4);
